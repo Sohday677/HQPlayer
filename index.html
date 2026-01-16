@@ -1179,11 +1179,133 @@
 
         let currentVideoUrl = null;
         let mpegtsPlayer = null;
+        let currentTsFile = null; // Store the File object for MPEG-TS seeking
         
         // Check if file is MPEG-TS format
         function isMpegTsFile(file) {
             const ext = file.name.toLowerCase().split('.').pop();
             return ['ts', 'mts', 'm2ts'].includes(ext);
+        }
+        
+        // Custom Range Loader for blob/File objects
+        // This enables seeking in MPEG-TS files loaded from local disk
+        class BlobRangeLoader {
+            constructor(file) {
+                this._file = file;
+                this._fileSize = file.size;
+                this._receivedLength = 0;
+                this._onContentLengthKnown = null;
+                this._onDataArrival = null;
+                this._onComplete = null;
+                this._onError = null;
+                this._requestAbort = false;
+                this._currentRange = { from: 0, to: -1 };
+            }
+            
+            static isSupported() {
+                return typeof FileReader !== 'undefined';
+            }
+            
+            get type() {
+                return 'range';
+            }
+            
+            get status() {
+                return this._status || 0;
+            }
+            
+            get currentURL() {
+                return this._file.name;
+            }
+            
+            get isWorking() {
+                return this._isWorking || false;
+            }
+            
+            get needStashBuffer() {
+                return false;
+            }
+            
+            get currentRange() {
+                return this._currentRange;
+            }
+            
+            set currentRange(range) {
+                this._currentRange = range;
+            }
+            
+            destroy() {
+                this._file = null;
+                this._requestAbort = true;
+            }
+            
+            open(dataSource, range) {
+                this._dataSource = dataSource;
+                this._currentRange = range;
+                this._status = 200;
+                this._isWorking = true;
+                
+                // Report file size immediately
+                if (this._onContentLengthKnown) {
+                    this._onContentLengthKnown(this._fileSize);
+                }
+                
+                // Start reading from the specified range
+                this._loadRange(range.from, range.to);
+            }
+            
+            abort() {
+                this._requestAbort = true;
+                this._isWorking = false;
+            }
+            
+            _loadRange(from, to) {
+                if (this._requestAbort) return;
+                
+                const end = to === -1 ? this._fileSize : Math.min(to + 1, this._fileSize);
+                const chunkSize = 1024 * 1024; // 1MB chunks
+                let offset = from;
+                
+                const readNextChunk = () => {
+                    if (this._requestAbort || offset >= end) {
+                        this._isWorking = false;
+                        if (this._onComplete && !this._requestAbort) {
+                            this._onComplete(from, offset - 1);
+                        }
+                        return;
+                    }
+                    
+                    const chunkEnd = Math.min(offset + chunkSize, end);
+                    const blob = this._file.slice(offset, chunkEnd);
+                    const reader = new FileReader();
+                    
+                    reader.onload = (e) => {
+                        if (this._requestAbort) return;
+                        
+                        const chunk = new Uint8Array(e.target.result);
+                        this._receivedLength += chunk.byteLength;
+                        
+                        if (this._onDataArrival) {
+                            this._onDataArrival(chunk.buffer, offset, this._receivedLength);
+                        }
+                        
+                        offset = chunkEnd;
+                        // Use setTimeout to avoid blocking the main thread
+                        setTimeout(readNextChunk, 0);
+                    };
+                    
+                    reader.onerror = (e) => {
+                        this._isWorking = false;
+                        if (this._onError) {
+                            this._onError('FileReader error', { code: -1, msg: e.target.error });
+                        }
+                    };
+                    
+                    reader.readAsArrayBuffer(blob);
+                };
+                
+                readNextChunk();
+            }
         }
         
         // Destroy existing mpegts player if any
@@ -1195,6 +1317,7 @@
                 try { mpegtsPlayer.destroy(); } catch (e) { /* ignore */ }
                 mpegtsPlayer = null;
             }
+            currentTsFile = null;
         }
 
         function loadVideo(file) {
@@ -1216,25 +1339,152 @@
             
             // Check if it's an MPEG-TS file and use mpegts.js
             if (isMpegTsFile(file) && typeof mpegts !== 'undefined' && mpegts.isSupported()) {
-                // Use mpegts.js for .ts files with seeking support
+                // Store file reference for custom loader
+                currentTsFile = file;
+                
+                // Create custom loader class for this file
+                const fileRef = file;
+                const CustomBlobLoader = class {
+                    constructor(seekHandler, config) {
+                        this._file = fileRef;
+                        this._fileSize = fileRef.size;
+                        this._seekHandler = seekHandler;
+                        this._config = config;
+                        this._needStash = true;
+                        this._requestAbort = false;
+                        this._contentLength = null;
+                        this._receivedLength = 0;
+                        this._range = { from: 0, to: -1 };
+                        
+                        this.TAG = 'CustomBlobLoader';
+                        this._onContentLengthKnown = null;
+                        this._onURLRedirect = null;
+                        this._onDataArrival = null;
+                        this._onError = null;
+                        this._onComplete = null;
+                    }
+                    
+                    static isSupported() {
+                        return true;
+                    }
+                    
+                    destroy() {
+                        this._requestAbort = true;
+                        this._file = null;
+                    }
+                    
+                    get type() {
+                        return 'custom-blob-loader';
+                    }
+                    
+                    get needStashBuffer() {
+                        return this._needStash;
+                    }
+                    
+                    get onContentLengthKnown() { return this._onContentLengthKnown; }
+                    set onContentLengthKnown(callback) { this._onContentLengthKnown = callback; }
+                    get onURLRedirect() { return this._onURLRedirect; }
+                    set onURLRedirect(callback) { this._onURLRedirect = callback; }
+                    get onDataArrival() { return this._onDataArrival; }
+                    set onDataArrival(callback) { this._onDataArrival = callback; }
+                    get onError() { return this._onError; }
+                    set onError(callback) { this._onError = callback; }
+                    get onComplete() { return this._onComplete; }
+                    set onComplete(callback) { this._onComplete = callback; }
+                    
+                    open(dataSource, range) {
+                        this._range = range || { from: 0, to: -1 };
+                        this._requestAbort = false;
+                        this._receivedLength = 0;
+                        
+                        // Report file size
+                        this._contentLength = this._fileSize;
+                        if (this._onContentLengthKnown) {
+                            this._onContentLengthKnown(this._contentLength);
+                        }
+                        
+                        // Start loading
+                        this._loadChunks();
+                    }
+                    
+                    abort() {
+                        this._requestAbort = true;
+                    }
+                    
+                    _loadChunks() {
+                        const from = this._range.from;
+                        const to = this._range.to === -1 ? this._fileSize : Math.min(this._range.to + 1, this._fileSize);
+                        const chunkSize = 64 * 1024; // 64KB chunks for smoother loading
+                        let offset = from;
+                        
+                        const loadNextChunk = () => {
+                            if (this._requestAbort || offset >= to) {
+                                if (!this._requestAbort && this._onComplete) {
+                                    this._onComplete(from, offset - 1);
+                                }
+                                return;
+                            }
+                            
+                            const end = Math.min(offset + chunkSize, to);
+                            const blob = this._file.slice(offset, end);
+                            const reader = new FileReader();
+                            
+                            reader.onload = (e) => {
+                                if (this._requestAbort) return;
+                                
+                                const chunk = new Uint8Array(e.target.result);
+                                this._receivedLength += chunk.byteLength;
+                                
+                                if (this._onDataArrival) {
+                                    this._onDataArrival(chunk.buffer, offset, this._receivedLength);
+                                }
+                                
+                                offset = end;
+                                // Continue loading without blocking
+                                setTimeout(loadNextChunk, 0);
+                            };
+                            
+                            reader.onerror = (e) => {
+                                if (this._onError) {
+                                    this._onError(0, { code: -1, msg: 'File read error' });
+                                }
+                            };
+                            
+                            reader.readAsArrayBuffer(blob);
+                        };
+                        
+                        loadNextChunk();
+                    }
+                };
+                
+                // Use mpegts.js for .ts files with custom blob loader
                 mpegtsPlayer = mpegts.createPlayer({
                     type: 'mpegts',
                     isLive: false,
-                    url: currentVideoUrl
+                    hasAudio: true,
+                    hasVideo: true,
+                    url: file.name, // Use filename as identifier
+                    filesize: file.size // Provide file size for duration calculation
                 }, {
-                    // Enable seeking for static files
-                    enableWorker: true,
+                    enableWorker: false, // Disable worker for blob loading
                     lazyLoad: true,
-                    lazyLoadMaxDuration: 3 * 60, // 3 minutes buffer
+                    lazyLoadMaxDuration: 3 * 60,
                     lazyLoadRecoverDuration: 30,
-                    accurateSeek: true,
-                    seekType: 'range', // Use HTTP Range requests for seeking
+                    deferLoadAfterSourceOpen: false,
                     autoCleanupSourceBuffer: true,
                     autoCleanupMaxBackwardDuration: 3 * 60,
-                    autoCleanupMinBackwardDuration: 2 * 60
+                    autoCleanupMinBackwardDuration: 2 * 60,
+                    customLoader: CustomBlobLoader
                 });
                 mpegtsPlayer.attachMediaElement(video);
                 mpegtsPlayer.load();
+                
+                // Show notice about MPEG-TS seeking limitation
+                showToast(
+                    '📺 MPEG-TS File Loaded',
+                    'Playing .ts file with custom loader. Seeking may have limited accuracy. For best results, convert to MP4: ffmpeg -i video.ts -c copy video.mp4',
+                    8000
+                );
             } else {
                 // Use native HTML5 video for other formats
                 video.src = currentVideoUrl;
