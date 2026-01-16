@@ -2277,7 +2277,8 @@
                 const saved = positions[currentVideoFileName];
                 const duration = getEffectiveDuration();
                 if (saved && saved.time > 0 && saved.time < duration - 1) {
-                    video.currentTime = saved.time;
+                    // Rewind 3 seconds from saved position for context on reload
+                    video.currentTime = Math.max(0, saved.time - 3);
                 }
             }
         }
