@@ -1180,11 +1180,33 @@
         let currentVideoUrl = null;
         let mpegtsPlayer = null;
         let currentTsFile = null; // Store the File object for MPEG-TS seeking
+        let estimatedTsDuration = null; // Estimated duration for MPEG-TS files
         
         // Check if file is MPEG-TS format
         function isMpegTsFile(file) {
             const ext = file.name.toLowerCase().split('.').pop();
             return ['ts', 'mts', 'm2ts'].includes(ext);
+        }
+        
+        // Estimate MPEG-TS duration from file size
+        // Based on typical bitrates: 1-6 Mbps for web video, 15-25 Mbps for broadcast
+        function estimateTsDuration(fileSize) {
+            // Use conservative estimate of 2 Mbps (common for web recordings)
+            const estimatedBitrate = 2 * 1024 * 1024 / 8; // 2 Mbps in bytes per second
+            return fileSize / estimatedBitrate;
+        }
+        
+        // Get effective video duration (handles MPEG-TS files that return Infinity or NaN)
+        function getEffectiveDuration() {
+            const dur = video.duration;
+            if (dur && isFinite(dur) && dur > 0) {
+                return dur;
+            }
+            // Fall back to estimated duration for MPEG-TS files
+            if (estimatedTsDuration && estimatedTsDuration > 0) {
+                return estimatedTsDuration;
+            }
+            return 0;
         }
         
         // Custom Range Loader for blob/File objects
@@ -1318,6 +1340,7 @@
                 mpegtsPlayer = null;
             }
             currentTsFile = null;
+            estimatedTsDuration = null; // Reset estimated duration
         }
 
         function loadVideo(file) {
@@ -1457,6 +1480,9 @@
                     }
                 };
                 
+                // Estimate duration for progress bar before actual metadata
+                estimatedTsDuration = estimateTsDuration(file.size);
+                
                 // Use mpegts.js for .ts files with custom blob loader
                 mpegtsPlayer = mpegts.createPlayer({
                     type: 'mpegts',
@@ -1464,26 +1490,55 @@
                     hasAudio: true,
                     hasVideo: true,
                     url: file.name, // Use filename as identifier
-                    filesize: file.size // Provide file size for duration calculation
+                    filesize: file.size, // Provide file size for duration calculation
+                    duration: estimatedTsDuration // Set estimated duration
                 }, {
                     enableWorker: false, // Disable worker for blob loading
-                    lazyLoad: true,
-                    lazyLoadMaxDuration: 3 * 60,
-                    lazyLoadRecoverDuration: 30,
+                    lazyLoad: false, // Disable lazy load to get full file for seeking
                     deferLoadAfterSourceOpen: false,
                     autoCleanupSourceBuffer: true,
-                    autoCleanupMaxBackwardDuration: 3 * 60,
-                    autoCleanupMinBackwardDuration: 2 * 60,
+                    autoCleanupMaxBackwardDuration: 5 * 60,
+                    autoCleanupMinBackwardDuration: 3 * 60,
+                    fixAudioTimestampGap: true,
+                    accurateSeek: true,
                     customLoader: CustomBlobLoader
                 });
+                
+                // Listen for media info events to update duration
+                mpegtsPlayer.on(mpegts.Events.MEDIA_INFO, (mediaInfo) => {
+                    console.log('MPEG-TS Media Info:', mediaInfo);
+                    if (mediaInfo.duration && mediaInfo.duration > 0) {
+                        estimatedTsDuration = mediaInfo.duration / 1000; // Convert ms to seconds
+                        durationEl.textContent = formatTime(estimatedTsDuration);
+                    }
+                });
+                
+                mpegtsPlayer.on(mpegts.Events.METADATA_ARRIVED, (metadata) => {
+                    console.log('MPEG-TS Metadata:', metadata);
+                });
+                
+                mpegtsPlayer.on(mpegts.Events.STATISTICS_INFO, (stats) => {
+                    // Use statistics to refine duration estimate based on actual bitrate
+                    if (stats.speed && stats.speed > 0 && file.size) {
+                        // Bitrate estimation from loading speed isn't reliable for duration
+                    }
+                });
+                
+                mpegtsPlayer.on(mpegts.Events.ERROR, (errorType, errorDetail, errorInfo) => {
+                    console.error('MPEG-TS Error:', errorType, errorDetail, errorInfo);
+                });
+                
                 mpegtsPlayer.attachMediaElement(video);
                 mpegtsPlayer.load();
                 
-                // Show notice about MPEG-TS seeking limitation
+                // Update duration display with estimate
+                durationEl.textContent = formatTime(estimatedTsDuration);
+                
+                // Show notice about MPEG-TS
                 showToast(
                     '📺 MPEG-TS File Loaded',
-                    'Playing .ts file with custom loader. Seeking may have limited accuracy. For best results, convert to MP4: ffmpeg -i video.ts -c copy video.mp4',
-                    8000
+                    'Playing .ts file. Duration: ~' + formatTime(estimatedTsDuration) + ' (estimated). Seeking may have limited accuracy.',
+                    6000
                 );
             } else {
                 // Use native HTML5 video for other formats
@@ -1494,11 +1549,12 @@
         
         // Save video position to localStorage
         function saveVideoPosition() {
-            if (currentVideoFileName && video.currentTime > 0 && video.duration) {
+            const duration = getEffectiveDuration();
+            if (currentVideoFileName && video.currentTime > 0 && duration > 0) {
                 const positions = JSON.parse(localStorage.getItem('hqplayer_positions') || '{}');
                 positions[currentVideoFileName] = {
                     time: video.currentTime,
-                    duration: video.duration,
+                    duration: duration,
                     savedAt: Date.now()
                 };
                 // Keep only last 50 videos to prevent localStorage bloat
@@ -1516,7 +1572,8 @@
             if (currentVideoFileName) {
                 const positions = JSON.parse(localStorage.getItem('hqplayer_positions') || '{}');
                 const saved = positions[currentVideoFileName];
-                if (saved && saved.time > 0 && saved.time < video.duration - 1) {
+                const duration = getEffectiveDuration();
+                if (saved && saved.time > 0 && saved.time < duration - 1) {
                     video.currentTime = saved.time;
                 }
             }
@@ -1533,7 +1590,10 @@
 
         // Video events
         video.addEventListener('loadedmetadata', () => {
-            durationEl.textContent = formatTime(video.duration);
+            const duration = getEffectiveDuration();
+            if (duration > 0) {
+                durationEl.textContent = formatTime(duration);
+            }
             loadingSpinner.classList.remove('visible');
             // Restore saved position after metadata loads
             restoreVideoPosition();
@@ -1566,16 +1626,22 @@
 
         video.addEventListener('timeupdate', () => {
             if (!isDragging) {
-                const progress = (video.currentTime / video.duration) * 100;
-                progressBar.style.width = `${progress}%`;
+                const duration = getEffectiveDuration();
+                if (duration > 0) {
+                    const progress = (video.currentTime / duration) * 100;
+                    progressBar.style.width = `${progress}%`;
+                }
                 currentTimeEl.textContent = formatTime(video.currentTime);
             }
         });
 
         video.addEventListener('progress', () => {
             if (video.buffered.length > 0) {
-                const buffered = (video.buffered.end(video.buffered.length - 1) / video.duration) * 100;
-                bufferBar.style.width = `${buffered}%`;
+                const duration = getEffectiveDuration();
+                if (duration > 0) {
+                    const buffered = (video.buffered.end(video.buffered.length - 1) / duration) * 100;
+                    bufferBar.style.width = `${buffered}%`;
+                }
             }
         });
 
@@ -1647,13 +1713,14 @@
         progressContainer.addEventListener('mousemove', (e) => {
             const rect = progressContainer.getBoundingClientRect();
             const pos = (e.clientX - rect.left) / rect.width;
-            const time = pos * video.duration;
+            const duration = getEffectiveDuration();
+            const time = pos * duration;
             previewTime.textContent = formatTime(time);
             previewTooltip.style.left = `${e.clientX - rect.left}px`;
             previewTooltip.classList.add('visible');
             
             // Update thumbnail preview
-            if (video.src && video.duration) {
+            if (video.src && duration > 0) {
                 updateThumbnailPreview(time);
             }
         });
@@ -1718,7 +1785,8 @@
             const rect = progressContainer.getBoundingClientRect();
             let pos = (e.clientX - rect.left) / rect.width;
             pos = Math.max(0, Math.min(1, pos));
-            const time = pos * video.duration;
+            const duration = getEffectiveDuration();
+            const time = pos * duration;
             video.currentTime = time;
             progressBar.style.width = `${pos * 100}%`;
         }
@@ -1923,8 +1991,9 @@
                 case '9':
                     e.preventDefault();
                     const percent = parseInt(e.key) / 10;
-                    if (video.duration) {
-                        video.currentTime = video.duration * percent;
+                    const dur = getEffectiveDuration();
+                    if (dur > 0) {
+                        video.currentTime = dur * percent;
                     }
                     break;
             }
@@ -1942,7 +2011,8 @@
         
         // Smooth slow playback functions
         function startSlowPlayback(direction) {
-            if (!video.src || !video.duration) return;
+            const duration = getEffectiveDuration();
+            if (!video.src || duration <= 0) return;
             
             // Save original state
             wasPlayingBeforeFrameStep = !video.paused;
@@ -1956,7 +2026,7 @@
             function smoothStep() {
                 if (!isFrameStepping) return;
                 const newTime = video.currentTime + stepAmount;
-                video.currentTime = Math.max(0, Math.min(video.duration, newTime));
+                video.currentTime = Math.max(0, Math.min(duration, newTime));
                 frameAnimationId = requestAnimationFrame(smoothStep);
             }
             
@@ -1980,8 +2050,9 @@
         }
 
         function seekBy(seconds) {
-            if (video.duration) {
-                video.currentTime = Math.max(0, Math.min(video.duration, video.currentTime + seconds));
+            const duration = getEffectiveDuration();
+            if (duration > 0) {
+                video.currentTime = Math.max(0, Math.min(duration, video.currentTime + seconds));
             }
         }
 
