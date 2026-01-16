@@ -1400,10 +1400,8 @@
                 toastProgressBar.style.width = '0%';
                 toastProgressText.textContent = 'Reading file...';
                 
-                const transmuxer = new muxjs.mp4.Transmuxer({
-                    keepOriginalTimestamps: true,
-                    remux: true
-                });
+                // Create transmuxer for TS to MP4 conversion
+                const transmuxer = new muxjs.mp4.Transmuxer();
                 
                 const mp4Segments = [];
                 
@@ -1517,10 +1515,8 @@
                         toastProgressText.textContent = 'Cached for 7 days!';
                     }
                     
-                    // Play the converted video
-                    setTimeout(() => {
-                        playConvertedMp4(mp4Blob);
-                    }, 1000);
+                    // Play the converted video after brief delay for UI feedback
+                    playConvertedMp4(mp4Blob);
                     
                 } catch (e) {
                     console.error('Conversion failed:', e);
