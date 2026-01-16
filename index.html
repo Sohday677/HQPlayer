@@ -704,7 +704,7 @@
             background: rgba(255, 255, 255, 0.6);
         }
 
-        /* Theater mode */
+        /* Theater mode - YouTube style */
         .video-wrapper.theater {
             width: 100%;
             max-width: 100%;
@@ -713,6 +713,7 @@
 
         .video-wrapper.theater .video-container {
             border-radius: 0;
+            max-height: calc(100vh - 120px);
         }
 
         .video-wrapper.theater .ambient-container {
@@ -722,6 +723,15 @@
         .main-container.theater {
             justify-content: flex-start;
             padding-top: 0;
+            background-color: #0f0f0f;
+        }
+
+        body.theater-active {
+            background-color: #0f0f0f;
+        }
+
+        body.theater-active .ambient-background {
+            display: none;
         }
 
         /* Shortcuts modal */
@@ -1321,6 +1331,7 @@
             isTheaterMode = !isTheaterMode;
             mainContainer.classList.toggle('theater', isTheaterMode);
             videoWrapper.classList.toggle('theater', isTheaterMode);
+            document.body.classList.toggle('theater-active', isTheaterMode);
         }
 
         // State
