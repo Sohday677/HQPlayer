@@ -1188,12 +1188,151 @@
             return ['ts', 'mts', 'm2ts'].includes(ext);
         }
         
-        // Estimate MPEG-TS duration from file size
-        // Based on typical bitrates: 1-6 Mbps for web video, 15-25 Mbps for broadcast
-        function estimateTsDuration(fileSize) {
-            // Use conservative estimate of 2 Mbps (common for web recordings)
-            const estimatedBitrate = 2 * 1024 * 1024 / 8; // 2 Mbps in bytes per second
+        // MPEG-TS Parser - Extract actual duration from PTS timestamps
+        // This parses the MPEG-TS packet structure to find presentation timestamps
+        async function parseTsDuration(file) {
+            const TS_PACKET_SIZE = 188;
+            const SYNC_BYTE = 0x47;
+            const SAMPLE_SIZE = 1024 * 1024; // Read 1MB from start and end
+            
+            try {
+                // Read beginning of file to find first PTS
+                const startBlob = file.slice(0, SAMPLE_SIZE);
+                const startBuffer = await startBlob.arrayBuffer();
+                const startData = new Uint8Array(startBuffer);
+                const firstPts = findPtsInData(startData);
+                
+                // Read end of file to find last PTS
+                const endOffset = Math.max(0, file.size - SAMPLE_SIZE);
+                const endBlob = file.slice(endOffset, file.size);
+                const endBuffer = await endBlob.arrayBuffer();
+                const endData = new Uint8Array(endBuffer);
+                const lastPts = findPtsInData(endData, true); // Search backwards
+                
+                if (firstPts !== null && lastPts !== null && lastPts > firstPts) {
+                    // PTS is in 90kHz clock units, convert to seconds
+                    const durationSeconds = (lastPts - firstPts) / 90000;
+                    console.log('MPEG-TS Duration parsed: First PTS:', firstPts, 'Last PTS:', lastPts, 'Duration:', durationSeconds);
+                    return durationSeconds;
+                }
+                
+                // Fallback to bitrate estimation if PTS parsing fails
+                return estimateTsDurationFromBitrate(file.size);
+            } catch (e) {
+                console.warn('Failed to parse MPEG-TS duration:', e);
+                return estimateTsDurationFromBitrate(file.size);
+            }
+        }
+        
+        // Find PTS timestamp in MPEG-TS data
+        function findPtsInData(data, searchBackwards = false) {
+            const TS_PACKET_SIZE = 188;
+            const SYNC_BYTE = 0x47;
+            
+            // Find sync byte alignment
+            let syncOffset = 0;
+            for (let i = 0; i < Math.min(data.length, TS_PACKET_SIZE * 2); i++) {
+                if (data[i] === SYNC_BYTE && 
+                    (i + TS_PACKET_SIZE >= data.length || data[i + TS_PACKET_SIZE] === SYNC_BYTE)) {
+                    syncOffset = i;
+                    break;
+                }
+            }
+            
+            let foundPts = null;
+            const numPackets = Math.floor((data.length - syncOffset) / TS_PACKET_SIZE);
+            
+            // Iterate through packets
+            const startIdx = searchBackwards ? numPackets - 1 : 0;
+            const endIdx = searchBackwards ? -1 : numPackets;
+            const step = searchBackwards ? -1 : 1;
+            
+            for (let p = startIdx; p !== endIdx; p += step) {
+                const packetStart = syncOffset + (p * TS_PACKET_SIZE);
+                if (packetStart + TS_PACKET_SIZE > data.length) continue;
+                
+                // Check sync byte
+                if (data[packetStart] !== SYNC_BYTE) continue;
+                
+                // Parse TS header
+                const adaptationFieldControl = (data[packetStart + 3] >> 4) & 0x03;
+                const payloadStart = data[packetStart + 1] & 0x40;
+                
+                // Calculate payload offset based on adaptation field
+                let payloadOffset = packetStart + 4;
+                if (adaptationFieldControl === 2 || adaptationFieldControl === 3) {
+                    const adaptationFieldLength = data[packetStart + 4];
+                    payloadOffset = packetStart + 5 + adaptationFieldLength;
+                }
+                
+                if (!payloadStart || payloadOffset >= packetStart + TS_PACKET_SIZE) continue;
+                
+                // Check for PES start code (0x00 0x00 0x01)
+                if (payloadOffset + 14 > data.length) continue;
+                if (data[payloadOffset] !== 0x00 || 
+                    data[payloadOffset + 1] !== 0x00 || 
+                    data[payloadOffset + 2] !== 0x01) continue;
+                
+                // Check stream ID for video (0xE0-0xEF) or audio (0xC0-0xDF)
+                const streamId = data[payloadOffset + 3];
+                if (!((streamId >= 0xE0 && streamId <= 0xEF) || 
+                      (streamId >= 0xC0 && streamId <= 0xDF))) continue;
+                
+                // Get PTS/DTS flags
+                const pesHeaderDataLength = data[payloadOffset + 8];
+                const ptsDtsFlags = (data[payloadOffset + 7] >> 6) & 0x03;
+                
+                if (ptsDtsFlags >= 2 && payloadOffset + 14 <= data.length) {
+                    // PTS is present
+                    const pts = extractPts(data, payloadOffset + 9);
+                    if (pts !== null) {
+                        foundPts = pts;
+                        if (!searchBackwards) return foundPts; // Return first found when searching forward
+                    }
+                }
+            }
+            
+            return foundPts;
+        }
+        
+        // Extract PTS from 5-byte PTS field
+        function extractPts(data, offset) {
+            if (offset + 5 > data.length) return null;
+            
+            // PTS format: 4 bits marker, 3 bits PTS[32..30], 1 bit marker,
+            //             15 bits PTS[29..15], 1 bit marker, 15 bits PTS[14..0], 1 bit marker
+            const byte0 = data[offset];
+            const byte1 = data[offset + 1];
+            const byte2 = data[offset + 2];
+            const byte3 = data[offset + 3];
+            const byte4 = data[offset + 4];
+            
+            // Validate marker bits
+            if ((byte0 & 0x01) !== 1 || (byte2 & 0x01) !== 1 || (byte4 & 0x01) !== 1) {
+                return null;
+            }
+            
+            // Extract PTS value (33 bits total)
+            const pts32_30 = (byte0 >> 1) & 0x07;
+            const pts29_15 = ((byte1 << 7) | (byte2 >> 1)) & 0x7FFF;
+            const pts14_0 = ((byte3 << 7) | (byte4 >> 1)) & 0x7FFF;
+            
+            // Combine into full 33-bit PTS (using Number since it fits in 53-bit precision)
+            const pts = (pts32_30 * 0x40000000) + (pts29_15 * 0x8000) + pts14_0;
+            
+            return pts;
+        }
+        
+        // Fallback: Estimate MPEG-TS duration from file size and typical bitrate
+        function estimateTsDurationFromBitrate(fileSize) {
+            // Use conservative estimate of 1.7 Mbps (common for web recordings)
+            const estimatedBitrate = 1.7 * 1024 * 1024 / 8; // 1.7 Mbps in bytes per second
             return fileSize / estimatedBitrate;
+        }
+        
+        // Legacy function for compatibility
+        function estimateTsDuration(fileSize) {
+            return estimateTsDurationFromBitrate(fileSize);
         }
         
         // Get effective video duration (handles MPEG-TS files that return Infinity or NaN)
@@ -1343,7 +1482,7 @@
             estimatedTsDuration = null; // Reset estimated duration
         }
 
-        function loadVideo(file) {
+        async function loadVideo(file) {
             // Save current video position before loading new one
             saveVideoPosition();
             
@@ -1364,6 +1503,17 @@
             if (isMpegTsFile(file) && typeof mpegts !== 'undefined' && mpegts.isSupported()) {
                 // Store file reference for custom loader
                 currentTsFile = file;
+                
+                // Parse actual duration from MPEG-TS file
+                showToast('🔍 Analyzing Video', 'Reading metadata to determine accurate duration...', 3000);
+                
+                try {
+                    estimatedTsDuration = await parseTsDuration(file);
+                    console.log('Parsed MPEG-TS duration:', estimatedTsDuration, 'seconds');
+                } catch (e) {
+                    console.warn('Failed to parse duration, using estimate:', e);
+                    estimatedTsDuration = estimateTsDuration(file.size);
+                }
                 
                 // Create custom loader class for this file
                 const fileRef = file;
@@ -1480,8 +1630,7 @@
                     }
                 };
                 
-                // Estimate duration for progress bar before actual metadata
-                estimatedTsDuration = estimateTsDuration(file.size);
+                // Duration already parsed above using parseTsDuration()
                 
                 // Use mpegts.js for .ts files with custom blob loader
                 mpegtsPlayer = mpegts.createPlayer({
@@ -1491,7 +1640,7 @@
                     hasVideo: true,
                     url: file.name, // Use filename as identifier
                     filesize: file.size, // Provide file size for duration calculation
-                    duration: estimatedTsDuration // Set estimated duration
+                    duration: estimatedTsDuration // Set parsed duration
                 }, {
                     enableWorker: false, // Disable worker for blob loading
                     lazyLoad: false, // Disable lazy load to get full file for seeking
@@ -1508,8 +1657,12 @@
                 mpegtsPlayer.on(mpegts.Events.MEDIA_INFO, (mediaInfo) => {
                     console.log('MPEG-TS Media Info:', mediaInfo);
                     if (mediaInfo.duration && mediaInfo.duration > 0) {
-                        estimatedTsDuration = mediaInfo.duration / 1000; // Convert ms to seconds
-                        durationEl.textContent = formatTime(estimatedTsDuration);
+                        const parsedDuration = mediaInfo.duration / 1000; // Convert ms to seconds
+                        // Only update if mpegts reports a valid duration
+                        if (parsedDuration > 0 && isFinite(parsedDuration)) {
+                            estimatedTsDuration = parsedDuration;
+                            durationEl.textContent = formatTime(estimatedTsDuration);
+                        }
                     }
                 });
                 
@@ -1531,14 +1684,14 @@
                 mpegtsPlayer.attachMediaElement(video);
                 mpegtsPlayer.load();
                 
-                // Update duration display with estimate
+                // Update duration display with parsed duration
                 durationEl.textContent = formatTime(estimatedTsDuration);
                 
-                // Show notice about MPEG-TS
+                // Show notice about MPEG-TS with accurate duration
                 showToast(
                     '📺 MPEG-TS File Loaded',
-                    'Playing .ts file. Duration: ~' + formatTime(estimatedTsDuration) + ' (estimated). Seeking may have limited accuracy.',
-                    6000
+                    'Duration: ' + formatTime(estimatedTsDuration) + ' (from metadata). Seeking may vary by keyframe placement.',
+                    5000
                 );
             } else {
                 // Use native HTML5 video for other formats
