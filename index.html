@@ -18,85 +18,69 @@
         }
 
         body {
-            background-color: #0f0f0f;
+            background-color: #000;
             color: #fff;
             font-family: 'YouTube Sans', 'Roboto', Arial, sans-serif;
             min-height: 100vh;
             display: flex;
             flex-direction: column;
             align-items: center;
-            overflow-x: hidden;
-        }
-
-        /* Header */
-        .header {
-            width: 100%;
-            background-color: #0f0f0f;
-            padding: 12px 24px;
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            border-bottom: 1px solid #272727;
-        }
-
-        .logo {
-            display: flex;
-            align-items: center;
-            gap: 4px;
-            font-size: 20px;
-            font-weight: 700;
-            color: #fff;
-            text-decoration: none;
-        }
-
-        .logo-icon {
-            width: 32px;
-            height: 22px;
-            background: #ff0000;
-            border-radius: 4px;
-            display: flex;
-            align-items: center;
             justify-content: center;
-        }
-
-        .logo-icon::after {
-            content: '';
-            border-left: 10px solid #fff;
-            border-top: 6px solid transparent;
-            border-bottom: 6px solid transparent;
-            margin-left: 3px;
+            overflow: hidden;
         }
 
         /* Main container */
         .main-container {
             width: 100%;
-            max-width: 1280px;
-            padding: 24px;
+            height: 100vh;
+            padding: 0;
             display: flex;
             flex-direction: column;
             align-items: center;
+            justify-content: center;
+            position: relative;
+        }
+
+        /* Full screen ambient background */
+        .ambient-background {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            z-index: 0;
+            pointer-events: none;
+            overflow: hidden;
+        }
+
+        .ambient-background-canvas {
+            width: 100%;
+            height: 100%;
+            filter: blur(150px) saturate(1.8) brightness(0.4);
+            transform: scale(1.5);
         }
 
         /* Video wrapper with ambient lighting */
         .video-wrapper {
             position: relative;
-            width: 100%;
-            max-width: 1280px;
-            border-radius: 12px;
+            width: 90%;
+            max-width: 1200px;
+            border-radius: 16px;
             overflow: visible;
+            z-index: 1;
         }
 
-        /* Ambient light effect */
+        /* Ambient light effect around video */
         .ambient-container {
             position: absolute;
-            top: -50px;
-            left: -50px;
-            right: -50px;
-            bottom: -50px;
+            top: -60px;
+            left: -60px;
+            right: -60px;
+            bottom: -60px;
             z-index: -1;
             pointer-events: none;
             overflow: hidden;
-            border-radius: 24px;
+            border-radius: 30px;
         }
 
         .ambient-canvas {
@@ -718,52 +702,135 @@
             background: rgba(255, 255, 255, 0.6);
         }
 
-        /* Instructions section */
-        .instructions {
-            margin-top: 24px;
-            padding: 20px;
-            background: #1a1a1a;
-            border-radius: 12px;
-            width: 100%;
-            max-width: 1280px;
-        }
-
-        .instructions h2 {
-            font-size: 18px;
-            font-weight: 500;
-            margin-bottom: 16px;
+        /* Help button and modal */
+        .help-btn {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            width: 48px;
+            height: 48px;
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            z-index: 100;
+            transition: all 0.2s ease;
+            font-size: 20px;
+            font-weight: 700;
             color: #fff;
         }
 
-        .instructions ul {
-            list-style: none;
-            padding: 0;
+        .help-btn:hover {
+            background: rgba(255, 255, 255, 0.2);
+            transform: scale(1.1);
         }
 
-        .instructions li {
-            padding: 8px 0;
-            font-size: 14px;
-            color: #aaa;
+        .shortcuts-modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.85);
+            backdrop-filter: blur(10px);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 200;
+        }
+
+        .shortcuts-modal.visible {
+            display: flex;
+        }
+
+        .shortcuts-content {
+            background: rgba(28, 28, 28, 0.95);
+            border-radius: 16px;
+            padding: 32px;
+            max-width: 500px;
+            width: 90%;
+            max-height: 80vh;
+            overflow-y: auto;
+            position: relative;
+        }
+
+        .shortcuts-content h2 {
+            font-size: 20px;
+            font-weight: 600;
+            margin-bottom: 24px;
+            color: #fff;
             display: flex;
             align-items: center;
             gap: 12px;
         }
 
-        .instructions li kbd {
-            background: #333;
-            padding: 4px 8px;
-            border-radius: 4px;
-            font-family: monospace;
+        .shortcuts-content h2 svg {
+            width: 24px;
+            height: 24px;
+            fill: #ff0000;
+        }
+
+        .shortcuts-close {
+            position: absolute;
+            top: 16px;
+            right: 16px;
+            background: none;
+            border: none;
+            color: #aaa;
+            font-size: 24px;
+            cursor: pointer;
+            padding: 8px;
+            line-height: 1;
+            transition: color 0.2s;
+        }
+
+        .shortcuts-close:hover {
+            color: #fff;
+        }
+
+        .shortcuts-list {
+            list-style: none;
+            padding: 0;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+
+        .shortcuts-list li {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 8px 12px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 8px;
+            font-size: 13px;
+            color: #ccc;
+        }
+
+        .shortcuts-list kbd {
+            background: rgba(255, 255, 255, 0.15);
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', monospace;
             font-size: 12px;
             color: #fff;
-            min-width: 24px;
+            min-width: 32px;
             text-align: center;
+            white-space: nowrap;
         }
 
         /* Responsive */
         @media (max-width: 768px) {
             .main-container {
-                padding: 12px;
+                padding: 16px;
+            }
+
+            .video-wrapper {
+                width: 95%;
             }
 
             .video-title {
@@ -786,6 +853,22 @@
 
             .ambient-container {
                 display: none;
+            }
+
+            .help-btn {
+                bottom: 16px;
+                right: 16px;
+                width: 40px;
+                height: 40px;
+                font-size: 16px;
+            }
+
+            .shortcuts-list {
+                grid-template-columns: 1fr;
+            }
+
+            .shortcuts-content {
+                padding: 24px;
             }
         }
 
@@ -916,13 +999,10 @@
     </style>
 </head>
 <body>
-    <!-- Header -->
-    <header class="header">
-        <a href="#" class="logo">
-            <div class="logo-icon"></div>
-            <span>HQPlayer</span>
-        </a>
-    </header>
+    <!-- Full page ambient background -->
+    <div class="ambient-background">
+        <canvas class="ambient-background-canvas" id="ambient-background-canvas"></canvas>
+    </div>
 
     <!-- Main container -->
     <main class="main-container">
@@ -1112,27 +1192,39 @@
                 </div>
             </div>
         </div>
+    </main>
 
-        <!-- Keyboard shortcuts instructions -->
-        <div class="instructions">
-            <h2>Keyboard Shortcuts</h2>
-            <ul>
-                <li><kbd>Space</kbd> / <kbd>K</kbd> Play / Pause</li>
-                <li><kbd>J</kbd> Rewind 10 seconds</li>
-                <li><kbd>L</kbd> Forward 10 seconds</li>
-                <li><kbd>←</kbd> Rewind 5 seconds</li>
-                <li><kbd>→</kbd> Forward 5 seconds</li>
+    <!-- Help button -->
+    <button class="help-btn" id="help-btn" title="Keyboard shortcuts">?</button>
+
+    <!-- Keyboard shortcuts modal -->
+    <div class="shortcuts-modal" id="shortcuts-modal">
+        <div class="shortcuts-content">
+            <button class="shortcuts-close" id="shortcuts-close">&times;</button>
+            <h2>
+                <svg viewBox="0 0 24 24">
+                    <path d="M20 5H4c-1.1 0-1.99.9-1.99 2L2 17c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm-9 3h2v2h-2V8zm0 3h2v2h-2v-2zM8 8h2v2H8V8zm0 3h2v2H8v-2zm-1 2H5v-2h2v2zm0-3H5V8h2v2zm9 7H8v-2h8v2zm0-4h-2v-2h2v2zm0-3h-2V8h2v2zm3 3h-2v-2h2v2zm0-3h-2V8h2v2z"/>
+                </svg>
+                Keyboard Shortcuts
+            </h2>
+            <ul class="shortcuts-list">
+                <li><kbd>Space</kbd> Play / Pause</li>
+                <li><kbd>K</kbd> Play / Pause</li>
+                <li><kbd>J</kbd> Rewind 10s</li>
+                <li><kbd>L</kbd> Forward 10s</li>
+                <li><kbd>←</kbd> Rewind 5s</li>
+                <li><kbd>→</kbd> Forward 5s</li>
                 <li><kbd>↑</kbd> Volume up</li>
                 <li><kbd>↓</kbd> Volume down</li>
                 <li><kbd>M</kbd> Mute / Unmute</li>
-                <li><kbd>F</kbd> Toggle fullscreen</li>
-                <li><kbd>I</kbd> Toggle Picture-in-Picture</li>
-                <li><kbd>0-9</kbd> Seek to percentage (0 = 0%, 5 = 50%, etc.)</li>
-                <li><kbd>,</kbd> Slow rewind (hold for smooth playback)</li>
-                <li><kbd>.</kbd> Slow forward (hold for smooth playback)</li>
+                <li><kbd>F</kbd> Fullscreen</li>
+                <li><kbd>I</kbd> Picture-in-Picture</li>
+                <li><kbd>0-9</kbd> Seek %</li>
+                <li><kbd>,</kbd> Slow rewind</li>
+                <li><kbd>.</kbd> Slow forward</li>
             </ul>
         </div>
-    </main>
+    </div>
 
     <!-- Toast notification -->
     <div class="toast-notification" id="toast-notification">
@@ -1190,12 +1282,31 @@
         const seekLeft = document.getElementById('seek-left');
         const seekRight = document.getElementById('seek-right');
         const ambientCanvas = document.getElementById('ambient-canvas');
+        const ambientBackgroundCanvas = document.getElementById('ambient-background-canvas');
         const ambientSettings = document.getElementById('ambient-settings');
         const ambientStatus = document.getElementById('ambient-status');
         const volumeIndicator = document.getElementById('volume-indicator');
         const volumeIndicatorText = document.getElementById('volume-indicator-text');
         const previewThumbnail = document.getElementById('preview-thumbnail');
         const previewThumbnailCtx = previewThumbnail.getContext('2d');
+        const helpBtn = document.getElementById('help-btn');
+        const shortcutsModal = document.getElementById('shortcuts-modal');
+        const shortcutsClose = document.getElementById('shortcuts-close');
+
+        // Help modal functionality
+        helpBtn.addEventListener('click', () => {
+            shortcutsModal.classList.add('visible');
+        });
+
+        shortcutsClose.addEventListener('click', () => {
+            shortcutsModal.classList.remove('visible');
+        });
+
+        shortcutsModal.addEventListener('click', (e) => {
+            if (e.target === shortcutsModal) {
+                shortcutsModal.classList.remove('visible');
+            }
+        });
 
         // State
         let isPlaying = false;
@@ -2366,6 +2477,8 @@
                 video.currentTime = time;
             }
             progressBar.style.width = `${pos * 100}%`;
+            // Update the timestamp immediately when dragging
+            currentTimeEl.textContent = formatTime(time);
         }
         
         // Simple seeking for MPEG-TS files - just use native seeking
@@ -2441,6 +2554,7 @@
                 if (video.paused) {
                     try {
                         ctx.drawImage(video, 0, 0, ambientCanvas.width, ambientCanvas.height);
+                        bgCtx.drawImage(video, 0, 0, ambientBackgroundCanvas.width, ambientBackgroundCanvas.height);
                     } catch (e) {}
                 }
             } else {
@@ -2505,6 +2619,17 @@
         document.addEventListener('keydown', (e) => {
             // Don't trigger shortcuts when typing in inputs
             if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+            
+            // Handle Escape key for modal
+            if (e.key === 'Escape') {
+                if (shortcutsModal.classList.contains('visible')) {
+                    shortcutsModal.classList.remove('visible');
+                    return;
+                }
+            }
+            
+            // Don't trigger video shortcuts when modal is open
+            if (shortcutsModal.classList.contains('visible')) return;
 
             switch (e.key.toLowerCase()) {
                 case ' ':
@@ -2728,6 +2853,7 @@
 
         // Ambient light effect
         const ctx = ambientCanvas.getContext('2d');
+        const bgCtx = ambientBackgroundCanvas.getContext('2d');
         let lastAmbientUpdate = 0;
         const AMBIENT_UPDATE_INTERVAL = 100; // Update every 100ms for better performance
 
@@ -2739,7 +2865,9 @@
                     // Throttle updates for better performance
                     if (timestamp - lastAmbientUpdate >= AMBIENT_UPDATE_INTERVAL) {
                         try {
+                            // Update both canvases
                             ctx.drawImage(video, 0, 0, ambientCanvas.width, ambientCanvas.height);
+                            bgCtx.drawImage(video, 0, 0, ambientBackgroundCanvas.width, ambientBackgroundCanvas.height);
                         } catch (e) {
                             // Ignore cross-origin errors
                         }
@@ -2755,6 +2883,8 @@
             // Set canvas size
             ambientCanvas.width = 160;
             ambientCanvas.height = 90;
+            ambientBackgroundCanvas.width = 160;
+            ambientBackgroundCanvas.height = 90;
             
             updateAmbient(0);
         }
@@ -2770,6 +2900,7 @@
         function clearAmbientLight() {
             stopAmbientLight();
             ctx.clearRect(0, 0, ambientCanvas.width, ambientCanvas.height);
+            bgCtx.clearRect(0, 0, ambientBackgroundCanvas.width, ambientBackgroundCanvas.height);
         }
 
         // Only clear ambient light when video ends, not when paused
@@ -2780,6 +2911,7 @@
             if (video.paused && ambientEnabled && video.src) {
                 try {
                     ctx.drawImage(video, 0, 0, ambientCanvas.width, ambientCanvas.height);
+                    bgCtx.drawImage(video, 0, 0, ambientBackgroundCanvas.width, ambientBackgroundCanvas.height);
                 } catch (e) {
                     // Ignore errors
                 }
