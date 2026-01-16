@@ -1292,6 +1292,10 @@
         const helpBtn = document.getElementById('help-btn');
         const shortcutsModal = document.getElementById('shortcuts-modal');
         const shortcutsClose = document.getElementById('shortcuts-close');
+        
+        // Canvas contexts for ambient light
+        const ctx = ambientCanvas.getContext('2d');
+        const bgCtx = ambientBackgroundCanvas.getContext('2d');
 
         // Help modal functionality
         helpBtn.addEventListener('click', () => {
@@ -2468,6 +2472,10 @@
             let pos = (e.clientX - rect.left) / rect.width;
             pos = Math.max(0, Math.min(1, pos));
             const duration = getEffectiveDuration();
+            
+            // Only proceed if we have a valid duration
+            if (duration <= 0) return;
+            
             const time = pos * duration;
             
             // For MPEG-TS files, use smart seeking
@@ -2852,8 +2860,6 @@
         }
 
         // Ambient light effect
-        const ctx = ambientCanvas.getContext('2d');
-        const bgCtx = ambientBackgroundCanvas.getContext('2d');
         let lastAmbientUpdate = 0;
         const AMBIENT_UPDATE_INTERVAL = 100; // Update every 100ms for better performance
 
