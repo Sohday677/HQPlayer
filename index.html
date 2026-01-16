@@ -73,22 +73,24 @@
         /* Ambient light effect around video */
         .ambient-container {
             position: absolute;
-            top: -60px;
-            left: -60px;
-            right: -60px;
-            bottom: -60px;
+            top: -80px;
+            left: -80px;
+            right: -80px;
+            bottom: -80px;
             z-index: -1;
             pointer-events: none;
             overflow: hidden;
-            border-radius: 30px;
+            border-radius: 50px;
+            -webkit-mask-image: radial-gradient(ellipse 70% 70% at 50% 50%, black 40%, transparent 70%);
+            mask-image: radial-gradient(ellipse 70% 70% at 50% 50%, black 40%, transparent 70%);
         }
 
         .ambient-canvas {
             width: 100%;
             height: 100%;
-            filter: blur(100px) saturate(1.5);
-            opacity: 0.6;
-            transform: scale(1.2);
+            filter: blur(80px) saturate(1.5);
+            opacity: 0.7;
+            transform: scale(1.3);
         }
 
         /* Video container */
@@ -702,33 +704,27 @@
             background: rgba(255, 255, 255, 0.6);
         }
 
-        /* Help button and modal */
-        .help-btn {
-            position: fixed;
-            bottom: 24px;
-            right: 24px;
-            width: 48px;
-            height: 48px;
-            background: rgba(255, 255, 255, 0.1);
-            backdrop-filter: blur(10px);
-            border: 1px solid rgba(255, 255, 255, 0.2);
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            cursor: pointer;
-            z-index: 100;
-            transition: all 0.2s ease;
-            font-size: 20px;
-            font-weight: 700;
-            color: #fff;
+        /* Theater mode */
+        .video-wrapper.theater {
+            width: 100%;
+            max-width: 100%;
+            border-radius: 0;
         }
 
-        .help-btn:hover {
-            background: rgba(255, 255, 255, 0.2);
-            transform: scale(1.1);
+        .video-wrapper.theater .video-container {
+            border-radius: 0;
         }
 
+        .video-wrapper.theater .ambient-container {
+            display: none;
+        }
+
+        .main-container.theater {
+            justify-content: flex-start;
+            padding-top: 0;
+        }
+
+        /* Shortcuts modal */
         .shortcuts-modal {
             position: fixed;
             top: 0;
@@ -853,14 +849,6 @@
 
             .ambient-container {
                 display: none;
-            }
-
-            .help-btn {
-                bottom: 16px;
-                right: 16px;
-                width: 40px;
-                height: 40px;
-                font-size: 16px;
             }
 
             .shortcuts-list {
@@ -1177,6 +1165,15 @@
                         </div>
                         <span class="settings-item-value" id="ambient-status">On</span>
                     </div>
+                    <div class="settings-item" id="shortcuts-settings">
+                        <div class="settings-item-left">
+                            <svg viewBox="0 0 24 24">
+                                <path d="M20 5H4c-1.1 0-1.99.9-1.99 2L2 17c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm-9 3h2v2h-2V8zm0 3h2v2h-2v-2zM8 8h2v2H8V8zm0 3h2v2H8v-2zm-1 2H5v-2h2v2zm0-3H5V8h2v2zm9 7H8v-2h8v2zm0-4h-2v-2h2v2zm0-3h-2V8h2v2zm3 3h-2v-2h2v2zm0-3h-2V8h2v2z"/>
+                            </svg>
+                            <span class="settings-item-label">Keyboard shortcuts</span>
+                        </div>
+                        <span class="settings-item-value">?</span>
+                    </div>
                 </div>
 
                 <!-- Speed menu -->
@@ -1193,9 +1190,6 @@
             </div>
         </div>
     </main>
-
-    <!-- Help button -->
-    <button class="help-btn" id="help-btn" title="Keyboard shortcuts">?</button>
 
     <!-- Keyboard shortcuts modal -->
     <div class="shortcuts-modal" id="shortcuts-modal">
@@ -1274,6 +1268,7 @@
         const speedMenu = document.getElementById('speed-menu');
         const currentSpeedEl = document.getElementById('current-speed');
         const pipBtn = document.getElementById('pip-btn');
+        const theaterBtn = document.getElementById('theater-btn');
         const loadingSpinner = document.getElementById('loading-spinner');
         const videoTitle = document.getElementById('video-title');
         const keyboardIndicator = document.getElementById('keyboard-indicator');
@@ -1289,16 +1284,20 @@
         const volumeIndicatorText = document.getElementById('volume-indicator-text');
         const previewThumbnail = document.getElementById('preview-thumbnail');
         const previewThumbnailCtx = previewThumbnail.getContext('2d');
-        const helpBtn = document.getElementById('help-btn');
+        const shortcutsSettings = document.getElementById('shortcuts-settings');
         const shortcutsModal = document.getElementById('shortcuts-modal');
         const shortcutsClose = document.getElementById('shortcuts-close');
+        const mainContainer = document.querySelector('.main-container');
+        const videoWrapper = document.querySelector('.video-wrapper');
         
         // Canvas contexts for ambient light
         const ctx = ambientCanvas.getContext('2d');
         const bgCtx = ambientBackgroundCanvas.getContext('2d');
 
-        // Help modal functionality
-        helpBtn.addEventListener('click', () => {
+        // Shortcuts modal functionality (now in settings menu)
+        shortcutsSettings.addEventListener('click', (e) => {
+            e.stopPropagation();
+            settingsMenu.classList.remove('visible');
             shortcutsModal.classList.add('visible');
         });
 
@@ -1311,6 +1310,17 @@
                 shortcutsModal.classList.remove('visible');
             }
         });
+
+        // Theater mode state and functionality
+        let isTheaterMode = false;
+
+        theaterBtn.addEventListener('click', toggleTheaterMode);
+
+        function toggleTheaterMode() {
+            isTheaterMode = !isTheaterMode;
+            mainContainer.classList.toggle('theater', isTheaterMode);
+            videoWrapper.classList.toggle('theater', isTheaterMode);
+        }
 
         // State
         let isPlaying = false;
@@ -2691,6 +2701,10 @@
                 case 'i':
                     e.preventDefault();
                     pipBtn.click();
+                    break;
+                case 't':
+                    e.preventDefault();
+                    toggleTheaterMode();
                     break;
                 case ',':
                     e.preventDefault();
