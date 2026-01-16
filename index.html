@@ -786,6 +786,42 @@
                 display: none;
             }
         }
+
+        /* Toast notification for MPEG-TS limitation */
+        .toast-notification {
+            position: fixed;
+            bottom: 100px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(33, 33, 33, 0.95);
+            color: #fff;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-size: 14px;
+            max-width: 500px;
+            text-align: center;
+            z-index: 1000;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.3s ease;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+        }
+
+        .toast-notification.visible {
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        .toast-notification .toast-title {
+            font-weight: 600;
+            margin-bottom: 4px;
+            color: #ffc107;
+        }
+
+        .toast-notification .toast-message {
+            color: #ccc;
+            line-height: 1.4;
+        }
     </style>
 </head>
 <body>
@@ -1007,6 +1043,12 @@
         </div>
     </main>
 
+    <!-- Toast notification -->
+    <div class="toast-notification" id="toast-notification">
+        <div class="toast-title"></div>
+        <div class="toast-message"></div>
+    </div>
+
     <script>
         // DOM Elements
         const video = document.getElementById('video');
@@ -1078,6 +1120,23 @@
                 return `${hrs}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
             }
             return `${mins}:${secs.toString().padStart(2, '0')}`;
+        }
+        
+        // Toast notification
+        const toastNotification = document.getElementById('toast-notification');
+        let toastTimeout = null;
+        
+        function showToast(title, message, duration = 8000) {
+            const titleEl = toastNotification.querySelector('.toast-title');
+            const messageEl = toastNotification.querySelector('.toast-message');
+            titleEl.textContent = title;
+            messageEl.textContent = message;
+            toastNotification.classList.add('visible');
+            
+            clearTimeout(toastTimeout);
+            toastTimeout = setTimeout(() => {
+                toastNotification.classList.remove('visible');
+            }, duration);
         }
         
         // Check if file is a video (including .ts files which browsers may not recognize)
@@ -1165,6 +1224,13 @@
                 });
                 mpegtsPlayer.attachMediaElement(video);
                 mpegtsPlayer.load();
+                
+                // Show limitation notice for MPEG-TS files
+                showToast(
+                    '⚠️ MPEG-TS Limitation',
+                    'Seeking and duration are not supported for .ts files due to format limitations. For full playback control, convert to MP4 using FFmpeg: ffmpeg -i video.ts -c copy video.mp4',
+                    12000
+                );
             } else {
                 // Use native HTML5 video for other formats
                 video.src = currentVideoUrl;
