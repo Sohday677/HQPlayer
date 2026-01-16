@@ -4,6 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>HQPlayer - Local Video Player</title>
+    <!-- mpegts.js for MPEG-TS file support -->
+    <script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.7.3/dist/mpegts.min.js" 
+            integrity="sha384-OLBgp1GsljhM2TJ+sbHjaiH9txEUvgdDTAzHv2P24donTt6/529l+9Ua0vFImLlb" 
+            crossorigin="anonymous"></script>
     <style>
         * {
             margin: 0;
@@ -1115,10 +1119,31 @@
         });
 
         let currentVideoUrl = null;
+        let mpegtsPlayer = null;
+        
+        // Check if file is MPEG-TS format
+        function isMpegTsFile(file) {
+            const ext = file.name.toLowerCase().split('.').pop();
+            return ['ts', 'mts', 'm2ts'].includes(ext);
+        }
+        
+        // Destroy existing mpegts player if any
+        function destroyMpegtsPlayer() {
+            if (mpegtsPlayer) {
+                try { mpegtsPlayer.pause(); } catch (e) { /* ignore */ }
+                try { mpegtsPlayer.unload(); } catch (e) { /* ignore */ }
+                try { mpegtsPlayer.detachMediaElement(); } catch (e) { /* ignore */ }
+                try { mpegtsPlayer.destroy(); } catch (e) { /* ignore */ }
+                mpegtsPlayer = null;
+            }
+        }
 
         function loadVideo(file) {
             // Save current video position before loading new one
             saveVideoPosition();
+            
+            // Destroy existing mpegts player
+            destroyMpegtsPlayer();
             
             // Revoke previous URL to prevent memory leaks
             if (currentVideoUrl) {
@@ -1126,11 +1151,25 @@
             }
             currentVideoUrl = URL.createObjectURL(file);
             currentVideoFileName = file.name;
-            video.src = currentVideoUrl;
             videoTitle.textContent = file.name.replace(/\.[^/.]+$/, '');
             fileOverlay.classList.add('hidden');
             loadingSpinner.classList.add('visible');
-            video.load();
+            
+            // Check if it's an MPEG-TS file and use mpegts.js
+            if (isMpegTsFile(file) && typeof mpegts !== 'undefined' && mpegts.isSupported()) {
+                // Use mpegts.js for .ts files
+                mpegtsPlayer = mpegts.createPlayer({
+                    type: 'mpegts',
+                    isLive: false,
+                    url: currentVideoUrl
+                });
+                mpegtsPlayer.attachMediaElement(video);
+                mpegtsPlayer.load();
+            } else {
+                // Use native HTML5 video for other formats
+                video.src = currentVideoUrl;
+                video.load();
+            }
         }
         
         // Save video position to localStorage
@@ -1166,6 +1205,7 @@
         // Clean up on page unload
         window.addEventListener('beforeunload', () => {
             saveVideoPosition();
+            destroyMpegtsPlayer();
             if (currentVideoUrl) {
                 URL.revokeObjectURL(currentVideoUrl);
             }
