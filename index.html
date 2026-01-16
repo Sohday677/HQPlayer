@@ -266,10 +266,20 @@
             transform: translateX(-50%);
             display: none;
             z-index: 15;
+            flex-direction: column;
+            align-items: center;
         }
 
         .preview-tooltip.visible {
-            display: block;
+            display: flex;
+        }
+
+        .preview-thumbnail {
+            width: 160px;
+            height: 90px;
+            background: #000;
+            border-radius: 2px;
+            margin-bottom: 4px;
         }
 
         .preview-time {
@@ -467,7 +477,7 @@
             font-size: 14px;
         }
 
-        /* Big play button */
+        /* Big play button - hidden by default like YouTube */
         .big-play-btn {
             position: absolute;
             top: 50%;
@@ -479,16 +489,12 @@
             border: none;
             border-radius: 14px;
             cursor: pointer;
-            display: flex;
+            display: none;
             align-items: center;
             justify-content: center;
             opacity: 0;
             transition: opacity 0.2s ease, background 0.2s ease;
             z-index: 5;
-        }
-
-        .video-container.paused .big-play-btn {
-            opacity: 1;
         }
 
         .big-play-btn:hover {
@@ -589,6 +595,56 @@
             font-size: 16px;
             color: #fff;
             margin-left: 8px;
+        }
+
+        /* Volume indicator at top */
+        .volume-indicator {
+            position: absolute;
+            top: 50px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.8);
+            border-radius: 4px;
+            padding: 8px 16px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.2s ease;
+            z-index: 16;
+        }
+
+        .volume-indicator.visible {
+            opacity: 1;
+        }
+
+        .volume-indicator svg {
+            width: 24px;
+            height: 24px;
+            fill: #fff;
+        }
+
+        .volume-indicator-bar {
+            width: 60px;
+            height: 4px;
+            background: rgba(255, 255, 255, 0.3);
+            border-radius: 2px;
+            overflow: hidden;
+        }
+
+        .volume-indicator-fill {
+            height: 100%;
+            background: #fff;
+            border-radius: 2px;
+            transition: width 0.1s ease;
+        }
+
+        .volume-indicator-text {
+            font-size: 14px;
+            color: #fff;
+            min-width: 40px;
+            text-align: center;
         }
 
         /* Double tap animation */
@@ -810,6 +866,17 @@
                     <span class="keyboard-indicator-text" id="keyboard-indicator-text"></span>
                 </div>
 
+                <!-- Volume indicator at top -->
+                <div class="volume-indicator" id="volume-indicator">
+                    <svg id="volume-indicator-icon" viewBox="0 0 24 24">
+                        <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
+                    </svg>
+                    <div class="volume-indicator-bar">
+                        <div class="volume-indicator-fill" id="volume-indicator-fill"></div>
+                    </div>
+                    <span class="volume-indicator-text" id="volume-indicator-text">100%</span>
+                </div>
+
                 <!-- Seek indicators -->
                 <div class="seek-indicator left" id="seek-left">
                     <div class="seek-indicator-content">
@@ -835,6 +902,7 @@
                         <div class="buffer-bar" id="buffer-bar"></div>
                         <div class="progress-bar" id="progress-bar"></div>
                         <div class="preview-tooltip" id="preview-tooltip">
+                            <canvas class="preview-thumbnail" id="preview-thumbnail" width="160" height="90"></canvas>
                             <div class="preview-time" id="preview-time">0:00</div>
                         </div>
                     </div>
@@ -957,6 +1025,8 @@
                 <li><kbd>F</kbd> Toggle fullscreen</li>
                 <li><kbd>I</kbd> Toggle Picture-in-Picture</li>
                 <li><kbd>0-9</kbd> Seek to percentage (0 = 0%, 5 = 50%, etc.)</li>
+                <li><kbd>,</kbd> Previous frame (when paused)</li>
+                <li><kbd>.</kbd> Next frame (when paused)</li>
                 <li><kbd>&lt;</kbd> Decrease playback speed</li>
                 <li><kbd>&gt;</kbd> Increase playback speed</li>
             </ul>
@@ -1001,6 +1071,12 @@
         const ambientCanvas = document.getElementById('ambient-canvas');
         const ambientSettings = document.getElementById('ambient-settings');
         const ambientStatus = document.getElementById('ambient-status');
+        const volumeIndicator = document.getElementById('volume-indicator');
+        const volumeIndicatorIcon = document.getElementById('volume-indicator-icon');
+        const volumeIndicatorFill = document.getElementById('volume-indicator-fill');
+        const volumeIndicatorText = document.getElementById('volume-indicator-text');
+        const previewThumbnail = document.getElementById('preview-thumbnail');
+        const previewThumbnailCtx = previewThumbnail.getContext('2d');
 
         // State
         let isPlaying = false;
@@ -1009,6 +1085,7 @@
         let ambientEnabled = true;
         let ambientAnimationFrame = null;
         let lastVolume = 1;
+        let volumeIndicatorTimeout = null;
         const speeds = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
 
         // Utility functions
@@ -1193,6 +1270,11 @@
             previewTime.textContent = formatTime(time);
             previewTooltip.style.left = `${e.clientX - rect.left}px`;
             previewTooltip.classList.add('visible');
+            
+            // Update thumbnail preview
+            if (video.src && video.duration) {
+                updateThumbnailPreview(time);
+            }
         });
 
         progressContainer.addEventListener('mouseleave', () => {
@@ -1220,6 +1302,36 @@
                 previewTooltip.classList.remove('visible');
             }
         });
+
+        // Thumbnail preview function
+        let thumbnailVideo = null;
+        let lastThumbnailTime = -1;
+        
+        function updateThumbnailPreview(time) {
+            // Create hidden video for thumbnail generation if not exists
+            if (!thumbnailVideo) {
+                thumbnailVideo = document.createElement('video');
+                thumbnailVideo.muted = true;
+                thumbnailVideo.preload = 'metadata';
+                thumbnailVideo.src = video.src;
+            } else if (thumbnailVideo.src !== video.src) {
+                thumbnailVideo.src = video.src;
+            }
+            
+            // Only update if time changed significantly (every 0.5 seconds)
+            if (Math.abs(time - lastThumbnailTime) < 0.5) return;
+            lastThumbnailTime = time;
+            
+            // Seek thumbnail video and draw frame
+            thumbnailVideo.currentTime = time;
+            thumbnailVideo.onseeked = () => {
+                try {
+                    previewThumbnailCtx.drawImage(thumbnailVideo, 0, 0, 160, 90);
+                } catch (e) {
+                    // Ignore errors
+                }
+            };
+        }
 
         function seek(e) {
             const rect = progressContainer.getBoundingClientRect();
@@ -1282,10 +1394,16 @@
             e.stopPropagation();
             ambientEnabled = !ambientEnabled;
             ambientStatus.textContent = ambientEnabled ? 'On' : 'Off';
-            if (ambientEnabled && !video.paused) {
+            if (ambientEnabled && video.src) {
                 startAmbientLight();
+                // Draw current frame immediately if paused
+                if (video.paused) {
+                    try {
+                        ctx.drawImage(video, 0, 0, ambientCanvas.width, ambientCanvas.height);
+                    } catch (e) {}
+                }
             } else {
-                stopAmbientLight();
+                clearAmbientLight();
             }
             settingsMenu.classList.remove('visible');
         });
@@ -1377,17 +1495,17 @@
                 case 'arrowup':
                     e.preventDefault();
                     changeVolume(0.05);
-                    showKeyboardIndicator('volume-up');
+                    showVolumeIndicator();
                     break;
                 case 'arrowdown':
                     e.preventDefault();
                     changeVolume(-0.05);
-                    showKeyboardIndicator('volume-down');
+                    showVolumeIndicator();
                     break;
                 case 'm':
                     e.preventDefault();
                     video.muted = !video.muted;
-                    showKeyboardIndicator(video.muted ? 'mute' : 'unmute');
+                    showVolumeIndicator();
                     break;
                 case 'f':
                     e.preventDefault();
@@ -1397,13 +1515,25 @@
                     e.preventDefault();
                     pipBtn.click();
                     break;
-                case '<':
                 case ',':
+                    e.preventDefault();
+                    // Frame by frame backward (like YouTube)
+                    if (video.paused && video.duration) {
+                        video.currentTime = Math.max(0, video.currentTime - (1/30)); // Assume 30fps
+                    }
+                    break;
+                case '.':
+                    e.preventDefault();
+                    // Frame by frame forward (like YouTube)
+                    if (video.paused && video.duration) {
+                        video.currentTime = Math.min(video.duration, video.currentTime + (1/30)); // Assume 30fps
+                    }
+                    break;
+                case '<':
                     e.preventDefault();
                     changeSpeed(-1);
                     break;
                 case '>':
-                case '.':
                     e.preventDefault();
                     changeSpeed(1);
                     break;
@@ -1465,6 +1595,33 @@
             }, 500);
         }
 
+        function showVolumeIndicator() {
+            // Update volume icon
+            const vol = video.muted ? 0 : video.volume;
+            if (vol === 0) {
+                volumeIndicatorIcon.innerHTML = '<path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/>';
+            } else if (vol < 0.5) {
+                volumeIndicatorIcon.innerHTML = '<path d="M18.5 12c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM5 9v6h4l5 5V4L9 9H5z"/>';
+            } else {
+                volumeIndicatorIcon.innerHTML = '<path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>';
+            }
+            
+            // Update volume bar and text
+            volumeIndicatorFill.style.width = `${vol * 100}%`;
+            volumeIndicatorText.textContent = `${Math.round(vol * 100)}%`;
+            
+            // Show indicator
+            volumeIndicator.classList.add('visible');
+            
+            // Clear previous timeout
+            clearTimeout(volumeIndicatorTimeout);
+            
+            // Hide after 1 second
+            volumeIndicatorTimeout = setTimeout(() => {
+                volumeIndicator.classList.remove('visible');
+            }, 1000);
+        }
+
         function showSeekIndicator(direction) {
             const indicator = direction === 'left' ? seekLeft : seekRight;
             indicator.classList.remove('visible');
@@ -1485,7 +1642,7 @@
             if (!ambientEnabled) return;
             
             function updateAmbient(timestamp) {
-                if (!video.paused && !video.ended && ambientEnabled) {
+                if (!video.ended && ambientEnabled && video.src) {
                     // Throttle updates for better performance
                     if (timestamp - lastAmbientUpdate >= AMBIENT_UPDATE_INTERVAL) {
                         try {
@@ -1495,7 +1652,10 @@
                         }
                         lastAmbientUpdate = timestamp;
                     }
-                    ambientAnimationFrame = requestAnimationFrame(updateAmbient);
+                    // Keep running even when paused to maintain ambient light
+                    if (!video.paused) {
+                        ambientAnimationFrame = requestAnimationFrame(updateAmbient);
+                    }
                 }
             }
             
@@ -1511,11 +1671,27 @@
                 cancelAnimationFrame(ambientAnimationFrame);
                 ambientAnimationFrame = null;
             }
+            // Don't clear canvas - keep ambient light visible when paused
+        }
+
+        function clearAmbientLight() {
+            stopAmbientLight();
             ctx.clearRect(0, 0, ambientCanvas.width, ambientCanvas.height);
         }
 
-        video.addEventListener('pause', stopAmbientLight);
-        video.addEventListener('ended', stopAmbientLight);
+        // Only clear ambient light when video ends, not when paused
+        video.addEventListener('ended', clearAmbientLight);
+        
+        // Update ambient when seeking while paused
+        video.addEventListener('seeked', () => {
+            if (video.paused && ambientEnabled && video.src) {
+                try {
+                    ctx.drawImage(video, 0, 0, ambientCanvas.width, ambientCanvas.height);
+                } catch (e) {
+                    // Ignore errors
+                }
+            }
+        });
 
         // Double-click for fullscreen
         video.addEventListener('dblclick', (e) => {
