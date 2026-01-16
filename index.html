@@ -8,6 +8,8 @@
     <script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.7.3/dist/mpegts.min.js" 
             integrity="sha384-Z2H/TjKWDNZA/2luGOnjLx9pcva7cK4VSWC+hZn78Kr5uG8YbMpxdz+wWXBMO6N/" 
             crossorigin="anonymous"></script>
+    <!-- mux.js for TS to MP4 transmuxing -->
+    <script src="https://cdn.jsdelivr.net/npm/mux.js@6.3.0/dist/mux.min.js" crossorigin="anonymous"></script>
     <style>
         * {
             margin: 0;
@@ -881,6 +883,36 @@
         .toast-notification .toast-progress-text.visible {
             display: block;
         }
+
+        .toast-notification .toast-cache-option {
+            font-size: 13px;
+            color: #aaa;
+            margin: 8px 0;
+        }
+
+        .toast-notification .toast-cache-option label {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            cursor: pointer;
+        }
+
+        .toast-notification .toast-cache-option input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            cursor: pointer;
+        }
+
+        .toast-notification .toast-btn-secondary {
+            background: transparent;
+            border: 1px solid #555;
+            color: #aaa;
+        }
+
+        .toast-notification .toast-btn-secondary:hover {
+            background: rgba(255, 255, 255, 0.1);
+            color: #fff;
+        }
     </style>
 </head>
 <body>
@@ -1107,7 +1139,14 @@
         <div class="toast-title"></div>
         <div class="toast-message"></div>
         <div class="toast-actions">
-            <button class="toast-btn" id="toast-load-btn" style="display: none;">Load Full Video</button>
+            <button class="toast-btn" id="toast-convert-btn" style="display: none;">🔄 Convert to MP4</button>
+            <div class="toast-cache-option" id="toast-cache-option" style="display: none;">
+                <label>
+                    <input type="checkbox" id="toast-cache-checkbox" checked>
+                    <span>Cache for 7 days</span>
+                </label>
+            </div>
+            <button class="toast-btn toast-btn-secondary" id="toast-dismiss-btn" style="display: none;">✕ Dismiss</button>
             <div class="toast-progress-container" id="toast-progress-container">
                 <div class="toast-progress-bar" id="toast-progress-bar"></div>
             </div>
@@ -1190,30 +1229,144 @@
         
         // Toast notification
         const toastNotification = document.getElementById('toast-notification');
-        const toastLoadBtn = document.getElementById('toast-load-btn');
+        const toastConvertBtn = document.getElementById('toast-convert-btn');
+        const toastCacheOption = document.getElementById('toast-cache-option');
+        const toastCacheCheckbox = document.getElementById('toast-cache-checkbox');
+        const toastDismissBtn = document.getElementById('toast-dismiss-btn');
         const toastProgressContainer = document.getElementById('toast-progress-container');
         const toastProgressBar = document.getElementById('toast-progress-bar');
         const toastProgressText = document.getElementById('toast-progress-text');
         let toastTimeout = null;
         let preloadedBuffer = null;
         let isPreloading = false;
+        let isConverting = false;
         
-        function showToast(title, message, duration = 8000, showLoadBtn = false) {
+        // IndexedDB for caching converted MP4 files
+        const DB_NAME = 'HQPlayerCache';
+        const DB_VERSION = 1;
+        const STORE_NAME = 'convertedVideos';
+        const CACHE_DURATION = 7 * 24 * 60 * 60 * 1000; // 7 days in milliseconds
+        
+        function openCacheDB() {
+            return new Promise((resolve, reject) => {
+                const request = indexedDB.open(DB_NAME, DB_VERSION);
+                request.onerror = () => reject(request.error);
+                request.onsuccess = () => resolve(request.result);
+                request.onupgradeneeded = (e) => {
+                    const db = e.target.result;
+                    if (!db.objectStoreNames.contains(STORE_NAME)) {
+                        const store = db.createObjectStore(STORE_NAME, { keyPath: 'fileName' });
+                        store.createIndex('cachedAt', 'cachedAt', { unique: false });
+                    }
+                };
+            });
+        }
+        
+        async function getCachedVideo(fileName) {
+            try {
+                const db = await openCacheDB();
+                return new Promise((resolve, reject) => {
+                    const transaction = db.transaction(STORE_NAME, 'readonly');
+                    const store = transaction.objectStore(STORE_NAME);
+                    const request = store.get(fileName);
+                    request.onsuccess = () => {
+                        const result = request.result;
+                        if (result && (Date.now() - result.cachedAt) < CACHE_DURATION) {
+                            resolve(result);
+                        } else {
+                            // Cache expired or not found
+                            if (result) {
+                                // Delete expired cache
+                                deleteCachedVideo(fileName);
+                            }
+                            resolve(null);
+                        }
+                    };
+                    request.onerror = () => reject(request.error);
+                });
+            } catch (e) {
+                console.warn('Failed to access cache:', e);
+                return null;
+            }
+        }
+        
+        async function setCachedVideo(fileName, mp4Blob, duration) {
+            try {
+                const db = await openCacheDB();
+                return new Promise((resolve, reject) => {
+                    const transaction = db.transaction(STORE_NAME, 'readwrite');
+                    const store = transaction.objectStore(STORE_NAME);
+                    const request = store.put({
+                        fileName,
+                        mp4Blob,
+                        duration,
+                        cachedAt: Date.now()
+                    });
+                    request.onsuccess = () => resolve();
+                    request.onerror = () => reject(request.error);
+                });
+            } catch (e) {
+                console.warn('Failed to cache video:', e);
+            }
+        }
+        
+        async function deleteCachedVideo(fileName) {
+            try {
+                const db = await openCacheDB();
+                return new Promise((resolve, reject) => {
+                    const transaction = db.transaction(STORE_NAME, 'readwrite');
+                    const store = transaction.objectStore(STORE_NAME);
+                    const request = store.delete(fileName);
+                    request.onsuccess = () => resolve();
+                    request.onerror = () => reject(request.error);
+                });
+            } catch (e) {
+                console.warn('Failed to delete cached video:', e);
+            }
+        }
+        
+        // Clean up expired cache entries
+        async function cleanupExpiredCache() {
+            try {
+                const db = await openCacheDB();
+                const transaction = db.transaction(STORE_NAME, 'readwrite');
+                const store = transaction.objectStore(STORE_NAME);
+                const request = store.openCursor();
+                request.onsuccess = (e) => {
+                    const cursor = e.target.result;
+                    if (cursor) {
+                        if ((Date.now() - cursor.value.cachedAt) > CACHE_DURATION) {
+                            cursor.delete();
+                        }
+                        cursor.continue();
+                    }
+                };
+            } catch (e) {
+                console.warn('Failed to cleanup cache:', e);
+            }
+        }
+        
+        // Run cache cleanup on page load
+        cleanupExpiredCache();
+        
+        function showToast(title, message, duration = 8000, showConvertBtn = false) {
             const titleEl = toastNotification.querySelector('.toast-title');
             const messageEl = toastNotification.querySelector('.toast-message');
             titleEl.textContent = title;
             messageEl.textContent = message;
             toastNotification.classList.add('visible');
             
-            // Handle load button visibility
-            toastLoadBtn.style.display = showLoadBtn ? 'block' : 'none';
+            // Handle convert button and cache option visibility
+            toastConvertBtn.style.display = showConvertBtn ? 'block' : 'none';
+            toastCacheOption.style.display = showConvertBtn ? 'block' : 'none';
+            toastDismissBtn.style.display = showConvertBtn ? 'block' : 'none';
             toastProgressContainer.classList.remove('visible');
             toastProgressText.classList.remove('visible');
             
             clearTimeout(toastTimeout);
-            if (duration > 0) {
+            if (duration > 0 && !showConvertBtn) {
                 toastTimeout = setTimeout(() => {
-                    if (!isPreloading) {
+                    if (!isPreloading && !isConverting) {
                         toastNotification.classList.remove('visible');
                     }
                 }, duration);
@@ -1222,69 +1375,11 @@
         
         function hideToast() {
             toastNotification.classList.remove('visible');
-            toastLoadBtn.style.display = 'none';
+            toastConvertBtn.style.display = 'none';
+            toastCacheOption.style.display = 'none';
+            toastDismissBtn.style.display = 'none';
             toastProgressContainer.classList.remove('visible');
             toastProgressText.classList.remove('visible');
-        }
-        
-        // Preload entire video into memory for better seeking
-        async function preloadFullVideo(file) {
-            if (isPreloading) return;
-            isPreloading = true;
-            
-            toastLoadBtn.disabled = true;
-            toastLoadBtn.textContent = 'Loading...';
-            toastProgressContainer.classList.add('visible');
-            toastProgressText.classList.add('visible');
-            
-            const fileSize = file.size;
-            const chunkSize = 1024 * 1024; // 1MB chunks
-            let loadedBytes = 0;
-            const chunks = [];
-            
-            try {
-                while (loadedBytes < fileSize) {
-                    const end = Math.min(loadedBytes + chunkSize, fileSize);
-                    const chunk = file.slice(loadedBytes, end);
-                    const buffer = await chunk.arrayBuffer();
-                    chunks.push(new Uint8Array(buffer));
-                    loadedBytes = end;
-                    
-                    // Update progress
-                    const percent = Math.round((loadedBytes / fileSize) * 100);
-                    toastProgressBar.style.width = percent + '%';
-                    toastProgressText.textContent = `Loading: ${formatFileSize(loadedBytes)} / ${formatFileSize(fileSize)} (${percent}%)`;
-                }
-                
-                // Combine all chunks into single buffer
-                const totalLength = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
-                preloadedBuffer = new Uint8Array(totalLength);
-                let offset = 0;
-                for (const chunk of chunks) {
-                    preloadedBuffer.set(chunk, offset);
-                    offset += chunk.byteLength;
-                }
-                
-                toastProgressText.textContent = 'Video fully loaded! Seeking and backward navigation now work smoothly.';
-                toastLoadBtn.textContent = '✓ Loaded';
-                
-                // Reload the player with preloaded buffer
-                if (currentTsFile) {
-                    reloadMpegtsWithPreloadedBuffer();
-                }
-                
-                setTimeout(() => {
-                    hideToast();
-                    isPreloading = false;
-                }, 3000);
-                
-            } catch (e) {
-                console.error('Preload failed:', e);
-                toastProgressText.textContent = 'Failed to load video: ' + e.message;
-                toastLoadBtn.disabled = false;
-                toastLoadBtn.textContent = 'Retry';
-                isPreloading = false;
-            }
         }
         
         function formatFileSize(bytes) {
@@ -1294,158 +1389,150 @@
             return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
         }
         
-        // Reload mpegts player with preloaded buffer for better seeking
-        function reloadMpegtsWithPreloadedBuffer() {
-            if (!preloadedBuffer || !currentTsFile) return;
-            
-            const currentTime = video.currentTime;
-            const wasPlaying = !video.paused;
-            
-            destroyMpegtsPlayer();
-            
-            // Create loader that reads from preloaded buffer
-            const bufferRef = preloadedBuffer;
-            const PreloadedBufferLoader = class {
-                constructor(seekHandler, config) {
-                    this._buffer = bufferRef;
-                    this._fileSize = bufferRef.byteLength;
-                    this._seekHandler = seekHandler;
-                    this._config = config;
-                    this._needStash = true;
-                    this._requestAbort = false;
-                    this._contentLength = null;
-                    this._receivedLength = 0;
-                    this._range = { from: 0, to: -1 };
+        // Convert MPEG-TS to MP4 using mux.js transmuxer
+        async function convertTsToMp4(file) {
+            return new Promise((resolve, reject) => {
+                isConverting = true;
+                toastConvertBtn.disabled = true;
+                toastConvertBtn.textContent = 'Converting...';
+                toastProgressContainer.classList.add('visible');
+                toastProgressText.classList.add('visible');
+                toastProgressBar.style.width = '0%';
+                toastProgressText.textContent = 'Reading file...';
+                
+                const transmuxer = new muxjs.mp4.Transmuxer({
+                    keepOriginalTimestamps: true,
+                    remux: true
+                });
+                
+                const mp4Segments = [];
+                
+                transmuxer.on('data', (segment) => {
+                    const data = new Uint8Array(segment.initSegment.byteLength + segment.data.byteLength);
+                    data.set(segment.initSegment, 0);
+                    data.set(segment.data, segment.initSegment.byteLength);
+                    mp4Segments.push(data);
+                });
+                
+                transmuxer.on('done', () => {
+                    toastProgressText.textContent = 'Finalizing...';
+                    toastProgressBar.style.width = '100%';
                     
-                    this.TAG = 'PreloadedBufferLoader';
-                    this._onContentLengthKnown = null;
-                    this._onURLRedirect = null;
-                    this._onDataArrival = null;
-                    this._onError = null;
-                    this._onComplete = null;
-                }
-                
-                static isSupported() {
-                    return true;
-                }
-                
-                destroy() {
-                    this._requestAbort = true;
-                }
-                
-                get type() {
-                    return 'preloaded-buffer-loader';
-                }
-                
-                get needStashBuffer() {
-                    return this._needStash;
-                }
-                
-                get onContentLengthKnown() { return this._onContentLengthKnown; }
-                set onContentLengthKnown(callback) { this._onContentLengthKnown = callback; }
-                get onURLRedirect() { return this._onURLRedirect; }
-                set onURLRedirect(callback) { this._onURLRedirect = callback; }
-                get onDataArrival() { return this._onDataArrival; }
-                set onDataArrival(callback) { this._onDataArrival = callback; }
-                get onError() { return this._onError; }
-                set onError(callback) { this._onError = callback; }
-                get onComplete() { return this._onComplete; }
-                set onComplete(callback) { this._onComplete = callback; }
-                
-                open(dataSource, range) {
-                    this._range = range || { from: 0, to: -1 };
-                    this._requestAbort = false;
-                    this._receivedLength = 0;
-                    
-                    // Report buffer size
-                    this._contentLength = this._fileSize;
-                    if (this._onContentLengthKnown) {
-                        this._onContentLengthKnown(this._contentLength);
+                    // Combine all segments
+                    const totalLength = mp4Segments.reduce((sum, seg) => sum + seg.byteLength, 0);
+                    const mp4Data = new Uint8Array(totalLength);
+                    let offset = 0;
+                    for (const seg of mp4Segments) {
+                        mp4Data.set(seg, offset);
+                        offset += seg.byteLength;
                     }
                     
-                    // Start loading from buffer
-                    this._loadFromBuffer();
+                    const mp4Blob = new Blob([mp4Data], { type: 'video/mp4' });
+                    isConverting = false;
+                    toastConvertBtn.disabled = false;
+                    toastConvertBtn.textContent = '✓ Converted';
+                    resolve(mp4Blob);
+                });
+                
+                // Read file in chunks and push to transmuxer
+                const reader = new FileReader();
+                const chunkSize = 1024 * 1024; // 1MB chunks
+                let offset = 0;
+                const fileSize = file.size;
+                
+                function readNextChunk() {
+                    if (offset >= fileSize) {
+                        transmuxer.flush();
+                        return;
+                    }
+                    
+                    const slice = file.slice(offset, Math.min(offset + chunkSize, fileSize));
+                    reader.readAsArrayBuffer(slice);
                 }
                 
-                abort() {
-                    this._requestAbort = true;
-                }
+                reader.onload = (e) => {
+                    const data = new Uint8Array(e.target.result);
+                    transmuxer.push(data);
+                    
+                    offset += chunkSize;
+                    const percent = Math.min(Math.round((offset / fileSize) * 100), 100);
+                    toastProgressBar.style.width = percent + '%';
+                    toastProgressText.textContent = `Converting: ${formatFileSize(offset)} / ${formatFileSize(fileSize)} (${percent}%)`;
+                    
+                    // Use setTimeout to prevent UI blocking
+                    setTimeout(readNextChunk, 0);
+                };
                 
-                _loadFromBuffer() {
-                    const from = this._range.from;
-                    const to = this._range.to === -1 ? this._fileSize : Math.min(this._range.to + 1, this._fileSize);
-                    const chunkSize = 1024 * 1024; // 1MB chunks for fast preloaded buffer transfer
-                    let offset = from;
-                    
-                    const loadNextChunk = () => {
-                        if (this._requestAbort || offset >= to) {
-                            if (!this._requestAbort && this._onComplete) {
-                                this._onComplete(from, offset - 1);
-                            }
-                            return;
-                        }
-                        
-                        const end = Math.min(offset + chunkSize, to);
-                        const chunk = this._buffer.slice(offset, end);
-                        this._receivedLength += chunk.byteLength;
-                        
-                        if (this._onDataArrival) {
-                            this._onDataArrival(chunk.buffer, offset, this._receivedLength);
-                        }
-                        
-                        offset = end;
-                        // Continue immediately for maximum speed
-                        setTimeout(loadNextChunk, 0);
-                    };
-                    
-                    loadNextChunk();
-                }
-            };
-            
-            // Create new player with preloaded buffer loader
-            mpegtsPlayer = mpegts.createPlayer({
-                type: 'mpegts',
-                isLive: false,
-                hasAudio: true,
-                hasVideo: true,
-                url: currentTsFile.name,
-                filesize: preloadedBuffer.byteLength,
-                duration: estimatedTsDuration
-            }, {
-                enableWorker: false,
-                lazyLoad: false,
-                deferLoadAfterSourceOpen: false,
-                autoCleanupSourceBuffer: false, // Disable cleanup for full seeking
-                autoCleanupMaxBackwardDuration: 60 * 60 * 24, // 24 hours backward
-                autoCleanupMinBackwardDuration: 60 * 60 * 24, // 24 hours minimum
-                fixAudioTimestampGap: true,
-                accurateSeek: true,
-                seekType: 'range',
-                customLoader: PreloadedBufferLoader
+                reader.onerror = () => {
+                    isConverting = false;
+                    toastConvertBtn.disabled = false;
+                    toastConvertBtn.textContent = '🔄 Convert to MP4';
+                    reject(new Error('Failed to read file'));
+                };
+                
+                readNextChunk();
             });
-            
-            mpegtsPlayer.on(mpegts.Events.ERROR, (errorType, errorDetail, errorInfo) => {
-                console.error('MPEG-TS Error:', errorType, errorDetail, errorInfo);
-            });
-            
-            mpegtsPlayer.attachMediaElement(video);
-            mpegtsPlayer.load();
-            
-            // Restore position after loading
-            video.addEventListener('canplay', function restorePosition() {
-                video.currentTime = currentTime;
-                if (wasPlaying) {
-                    video.play();
-                }
-                video.removeEventListener('canplay', restorePosition);
-            }, { once: true });
         }
         
-        // Add click handler for load button
-        toastLoadBtn.addEventListener('click', () => {
-            if (currentTsFile && !isPreloading) {
-                preloadFullVideo(currentTsFile);
+        // Play converted MP4 file
+        function playConvertedMp4(mp4Blob) {
+            // Clean up any existing MPEG-TS player
+            destroyMpegtsPlayer();
+            
+            // Revoke old URL
+            if (currentVideoUrl) {
+                URL.revokeObjectURL(currentVideoUrl);
             }
+            
+            // Create new URL for MP4 blob
+            currentVideoUrl = URL.createObjectURL(mp4Blob);
+            video.src = currentVideoUrl;
+            video.load();
+            
+            // Reset TS file tracking since we're now using MP4
+            currentTsFile = null;
+            estimatedTsDuration = null;
+            
+            showToast('✅ Conversion Complete', 'Video converted to MP4. Full seeking and thumbnail preview now available!', 5000);
+        }
+        
+        // Add click handler for convert button
+        toastConvertBtn.addEventListener('click', async () => {
+            if (currentTsFile && !isConverting) {
+                try {
+                    // Check if already cached
+                    const cached = await getCachedVideo(currentVideoFileName);
+                    if (cached) {
+                        showToast('📦 Using Cached Version', 'Playing cached MP4 conversion...', 3000);
+                        playConvertedMp4(cached.mp4Blob);
+                        return;
+                    }
+                    
+                    const mp4Blob = await convertTsToMp4(currentTsFile);
+                    
+                    // Cache if checkbox is checked
+                    if (toastCacheCheckbox.checked) {
+                        toastProgressText.textContent = 'Caching conversion...';
+                        await setCachedVideo(currentVideoFileName, mp4Blob, estimatedTsDuration);
+                        toastProgressText.textContent = 'Cached for 7 days!';
+                    }
+                    
+                    // Play the converted video
+                    setTimeout(() => {
+                        playConvertedMp4(mp4Blob);
+                    }, 1000);
+                    
+                } catch (e) {
+                    console.error('Conversion failed:', e);
+                    toastProgressText.textContent = 'Conversion failed: ' + e.message;
+                    toastConvertBtn.textContent = '🔄 Retry';
+                }
+            }
+        });
+        
+        // Add click handler for dismiss button
+        toastDismissBtn.addEventListener('click', () => {
+            hideToast();
         });
         
         // Check if file is a video (including .ts files which browsers may not recognize)
@@ -2003,13 +2090,27 @@
                 // Clear any previous preloaded buffer
                 preloadedBuffer = null;
                 
-                // Show notice about MPEG-TS seeking limitations
-                showToast(
-                    '📺 MPEG-TS File Loaded',
-                    'Duration: ' + formatTime(estimatedTsDuration) + '. Forward seeking works as the video buffers. Backward seeking may be limited. For best experience, convert to MP4: ffmpeg -i video.ts -c copy video.mp4',
-                    10000, // Auto-hide after 10 seconds
-                    false // No load button
-                );
+                // Check if we have a cached MP4 version
+                const checkCached = async () => {
+                    const cached = await getCachedVideo(currentVideoFileName);
+                    if (cached) {
+                        showToast(
+                            '📦 Cached MP4 Available',
+                            'A cached MP4 version of this video was found (expires in ' + Math.ceil((CACHE_DURATION - (Date.now() - cached.cachedAt)) / (24 * 60 * 60 * 1000)) + ' days). Click to use it for full seeking support.',
+                            0, // Don't auto-hide
+                            true // Show convert button
+                        );
+                        toastConvertBtn.textContent = '▶ Play Cached MP4';
+                    } else {
+                        showToast(
+                            '📺 MPEG-TS File Loaded',
+                            'Duration: ' + formatTime(estimatedTsDuration) + '. Seeking may be limited. Click "Convert to MP4" for full seeking support.',
+                            0, // Don't auto-hide
+                            true // Show convert button
+                        );
+                    }
+                };
+                checkCached();
             } else {
                 // Use native HTML5 video for other formats
                 video.src = currentVideoUrl;
