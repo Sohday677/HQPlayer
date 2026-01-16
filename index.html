@@ -817,7 +817,7 @@
                     <div class="file-select-text">Select a local video file to play</div>
                     <div class="file-select-subtext">Click anywhere or drag and drop a video file</div>
                 </div>
-                <input type="file" id="file-input" accept="video/*">
+                <input type="file" id="file-input" accept="video/*,.ts,.mts,.m2ts">
 
                 <!-- Video title bar -->
                 <div class="video-title-bar">
@@ -1075,13 +1075,21 @@
             }
             return `${mins}:${secs.toString().padStart(2, '0')}`;
         }
+        
+        // Check if file is a video (including .ts files which browsers may not recognize)
+        function isVideoFile(file) {
+            if (file.type.startsWith('video/')) return true;
+            // Check for MPEG-TS and other transport stream extensions
+            const ext = file.name.toLowerCase().split('.').pop();
+            return ['ts', 'mts', 'm2ts', 'mp4', 'webm', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'ogv'].includes(ext);
+        }
 
         // File handling
         fileOverlay.addEventListener('click', () => fileInput.click());
         
         fileInput.addEventListener('change', (e) => {
             const file = e.target.files[0];
-            if (file) {
+            if (file && isVideoFile(file)) {
                 loadVideo(file);
             }
         });
@@ -1101,7 +1109,7 @@
             e.preventDefault();
             fileOverlay.style.background = 'rgba(0, 0, 0, 0.85)';
             const file = e.dataTransfer.files[0];
-            if (file && file.type.startsWith('video/')) {
+            if (file && isVideoFile(file)) {
                 loadVideo(file);
             }
         });
