@@ -1374,7 +1374,7 @@
                 _loadFromBuffer() {
                     const from = this._range.from;
                     const to = this._range.to === -1 ? this._fileSize : Math.min(this._range.to + 1, this._fileSize);
-                    const chunkSize = 256 * 1024; // 256KB chunks for preloaded buffer
+                    const chunkSize = 1024 * 1024; // 1MB chunks for fast preloaded buffer transfer
                     let offset = from;
                     
                     const loadNextChunk = () => {
@@ -1394,8 +1394,8 @@
                         }
                         
                         offset = end;
-                        // Use requestAnimationFrame for smoother loading
-                        requestAnimationFrame(loadNextChunk);
+                        // Continue immediately for maximum speed
+                        setTimeout(loadNextChunk, 0);
                     };
                     
                     loadNextChunk();
@@ -1415,11 +1415,12 @@
                 enableWorker: false,
                 lazyLoad: false,
                 deferLoadAfterSourceOpen: false,
-                autoCleanupSourceBuffer: true,
-                autoCleanupMaxBackwardDuration: 60 * 60, // 1 hour backward
-                autoCleanupMinBackwardDuration: 30 * 60, // 30 min minimum
+                autoCleanupSourceBuffer: false, // Disable cleanup for full seeking
+                autoCleanupMaxBackwardDuration: 60 * 60 * 24, // 24 hours backward
+                autoCleanupMinBackwardDuration: 60 * 60 * 24, // 24 hours minimum
                 fixAudioTimestampGap: true,
                 accurateSeek: true,
+                seekType: 'range',
                 customLoader: PreloadedBufferLoader
             });
             
@@ -1895,7 +1896,7 @@
                     _loadChunks() {
                         const from = this._range.from;
                         const to = this._range.to === -1 ? this._fileSize : Math.min(this._range.to + 1, this._fileSize);
-                        const chunkSize = 64 * 1024; // 64KB chunks for smoother loading
+                        const chunkSize = 512 * 1024; // 512KB chunks for faster loading
                         let offset = from;
                         
                         const loadNextChunk = () => {
@@ -1921,8 +1922,8 @@
                                 }
                                 
                                 offset = end;
-                                // Continue loading without blocking
-                                setTimeout(loadNextChunk, 0);
+                                // Continue loading immediately for maximum speed
+                                loadNextChunk();
                             };
                             
                             reader.onerror = (e) => {
@@ -1951,13 +1952,17 @@
                     duration: estimatedTsDuration // Set parsed duration
                 }, {
                     enableWorker: false, // Disable worker for blob loading
-                    lazyLoad: false, // Disable lazy load to get full file for seeking
+                    lazyLoad: false, // Load entire file for seeking
+                    lazyLoadMaxDuration: 60 * 60 * 24, // 24 hours max
+                    lazyLoadRecoverDuration: 60 * 60, // 1 hour recover
                     deferLoadAfterSourceOpen: false,
-                    autoCleanupSourceBuffer: true,
-                    autoCleanupMaxBackwardDuration: 5 * 60,
-                    autoCleanupMinBackwardDuration: 3 * 60,
+                    autoCleanupSourceBuffer: false, // Disable cleanup to keep all buffered data for backward seeking
+                    autoCleanupMaxBackwardDuration: 60 * 60 * 24, // 24 hours backward
+                    autoCleanupMinBackwardDuration: 60 * 60 * 24, // 24 hours minimum
                     fixAudioTimestampGap: true,
                     accurateSeek: true,
+                    seekType: 'range', // Enable range-based seeking
+                    reuseRedirectedURL: true,
                     customLoader: CustomBlobLoader
                 });
                 
@@ -2001,9 +2006,9 @@
                 // Show notice about MPEG-TS with load full video option
                 showToast(
                     '📺 MPEG-TS File Loaded',
-                    'Duration: ' + formatTime(estimatedTsDuration) + '. Forward seeking works. Click "Load Full Video" for backward seeking.',
-                    0, // Don't auto-hide
-                    true // Show load button
+                    'Duration: ' + formatTime(estimatedTsDuration) + '. Seeking works after the buffer loads. The buffer bar shows loading progress.',
+                    8000, // Auto-hide after 8 seconds
+                    false // No load button - auto-buffers now
                 );
             } else {
                 // Use native HTML5 video for other formats
