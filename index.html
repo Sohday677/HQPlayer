@@ -2251,14 +2251,265 @@
             };
         }
 
+        // Track if we're currently seeking for MPEG-TS
+        let isSeeking = false;
+        let seekTimeout = null;
+        
         function seek(e) {
             const rect = progressContainer.getBoundingClientRect();
             let pos = (e.clientX - rect.left) / rect.width;
             pos = Math.max(0, Math.min(1, pos));
             const duration = getEffectiveDuration();
             const time = pos * duration;
-            video.currentTime = time;
+            
+            // For MPEG-TS files, use smart seeking
+            if (currentTsFile && mpegtsPlayer) {
+                seekMpegTs(time);
+            } else {
+                video.currentTime = time;
+            }
             progressBar.style.width = `${pos * 100}%`;
+        }
+        
+        // Smart seeking for MPEG-TS files
+        async function seekMpegTs(targetTime) {
+            if (isSeeking) {
+                // If already seeking, queue the new seek
+                clearTimeout(seekTimeout);
+                seekTimeout = setTimeout(() => seekMpegTs(targetTime), 100);
+                return;
+            }
+            
+            const currentTime = video.currentTime;
+            const buffered = video.buffered;
+            
+            // Check if target time is in buffered ranges
+            let isInBuffer = false;
+            for (let i = 0; i < buffered.length; i++) {
+                if (targetTime >= buffered.start(i) && targetTime <= buffered.end(i)) {
+                    isInBuffer = true;
+                    break;
+                }
+            }
+            
+            if (isInBuffer) {
+                // Target is buffered, can seek directly
+                video.currentTime = targetTime;
+                return;
+            }
+            
+            // Target is not buffered - for backward seeking or large forward jumps
+            // we need to restart the player from the target position
+            const isBackward = targetTime < currentTime;
+            const jumpDistance = Math.abs(targetTime - currentTime);
+            
+            if (isBackward || jumpDistance > 60) {
+                // Need to reload from target position
+                isSeeking = true;
+                loadingSpinner.classList.add('visible');
+                
+                try {
+                    // Calculate byte position for the target time
+                    const fileSize = currentTsFile.size;
+                    const duration = getEffectiveDuration();
+                    const bytePosition = Math.floor((targetTime / duration) * fileSize);
+                    
+                    // Destroy current player
+                    const wasPlaying = !video.paused;
+                    const file = currentTsFile;
+                    const savedDuration = estimatedTsDuration;
+                    
+                    destroyMpegtsPlayer();
+                    
+                    // Reload with new start position
+                    currentTsFile = file;
+                    estimatedTsDuration = savedDuration;
+                    
+                    await reloadMpegTsFromPosition(file, bytePosition, targetTime, wasPlaying);
+                } catch (e) {
+                    console.error('MPEG-TS seek error:', e);
+                    showToast('⚠️ Seek Error', 'Could not seek to the requested position. Try using smaller seek jumps.', 3000);
+                } finally {
+                    isSeeking = false;
+                    loadingSpinner.classList.remove('visible');
+                }
+            } else {
+                // Small forward seek - just set the time and wait for buffer
+                video.currentTime = targetTime;
+            }
+        }
+        
+        // Reload MPEG-TS player from a specific byte position
+        async function reloadMpegTsFromPosition(file, bytePosition, targetTime, shouldPlay) {
+            const fileRef = file;
+            const startOffset = Math.max(0, bytePosition);
+            
+            // Custom loader that starts from a specific position
+            const CustomBlobLoaderWithOffset = class {
+                constructor(seekHandler, config) {
+                    this._file = fileRef;
+                    this._fileSize = fileRef.size;
+                    this._seekHandler = seekHandler;
+                    this._config = config;
+                    this._needStash = true;
+                    this._requestAbort = false;
+                    this._contentLength = null;
+                    this._receivedLength = 0;
+                    this._range = { from: startOffset, to: -1 };
+                    
+                    this.TAG = 'CustomBlobLoaderWithOffset';
+                    this._onContentLengthKnown = null;
+                    this._onURLRedirect = null;
+                    this._onDataArrival = null;
+                    this._onError = null;
+                    this._onComplete = null;
+                }
+                
+                static isSupported() {
+                    return true;
+                }
+                
+                destroy() {
+                    this._requestAbort = true;
+                    this._file = null;
+                }
+                
+                get type() {
+                    return 'custom-blob-loader-offset';
+                }
+                
+                get needStashBuffer() {
+                    return this._needStash;
+                }
+                
+                get onContentLengthKnown() { return this._onContentLengthKnown; }
+                set onContentLengthKnown(callback) { this._onContentLengthKnown = callback; }
+                get onURLRedirect() { return this._onURLRedirect; }
+                set onURLRedirect(callback) { this._onURLRedirect = callback; }
+                get onDataArrival() { return this._onDataArrival; }
+                set onDataArrival(callback) { this._onDataArrival = callback; }
+                get onError() { return this._onError; }
+                set onError(callback) { this._onError = callback; }
+                get onComplete() { return this._onComplete; }
+                set onComplete(callback) { this._onComplete = callback; }
+                
+                open(dataSource, range) {
+                    this._range = range || { from: startOffset, to: -1 };
+                    this._requestAbort = false;
+                    this._receivedLength = 0;
+                    
+                    // Report file size
+                    this._contentLength = this._fileSize;
+                    if (this._onContentLengthKnown) {
+                        this._onContentLengthKnown(this._contentLength);
+                    }
+                    
+                    // Start loading
+                    this._loadChunks();
+                }
+                
+                abort() {
+                    this._requestAbort = true;
+                }
+                
+                _loadChunks() {
+                    const from = this._range.from;
+                    const to = this._range.to === -1 ? this._fileSize : Math.min(this._range.to + 1, this._fileSize);
+                    const chunkSize = 1024 * 1024; // 1MB chunks
+                    let offset = from;
+                    
+                    const loadNextChunk = () => {
+                        if (this._requestAbort || offset >= to) {
+                            if (!this._requestAbort && this._onComplete) {
+                                this._onComplete(from, offset - 1);
+                            }
+                            return;
+                        }
+                        
+                        const end = Math.min(offset + chunkSize, to);
+                        const blob = this._file.slice(offset, end);
+                        const reader = new FileReader();
+                        
+                        reader.onload = (e) => {
+                            if (this._requestAbort) return;
+                            
+                            const chunk = new Uint8Array(e.target.result);
+                            this._receivedLength += chunk.byteLength;
+                            
+                            if (this._onDataArrival) {
+                                this._onDataArrival(chunk.buffer, offset, this._receivedLength);
+                            }
+                            
+                            offset = end;
+                            loadNextChunk();
+                        };
+                        
+                        reader.onerror = (e) => {
+                            if (this._onError) {
+                                this._onError(0, { code: -1, msg: 'File read error' });
+                            }
+                        };
+                        
+                        reader.readAsArrayBuffer(blob);
+                    };
+                    
+                    loadNextChunk();
+                }
+            };
+            
+            mpegtsPlayer = mpegts.createPlayer({
+                type: 'mpegts',
+                isLive: false,
+                hasAudio: true,
+                hasVideo: true,
+                url: file.name,
+                filesize: file.size,
+                duration: estimatedTsDuration
+            }, {
+                enableWorker: false,
+                lazyLoad: false,
+                lazyLoadMaxDuration: 60 * 60 * 24,
+                lazyLoadRecoverDuration: 60 * 60,
+                deferLoadAfterSourceOpen: false,
+                autoCleanupSourceBuffer: false,
+                autoCleanupMaxBackwardDuration: 60 * 60 * 24,
+                autoCleanupMinBackwardDuration: 60 * 60 * 24,
+                fixAudioTimestampGap: true,
+                accurateSeek: true,
+                seekType: 'range',
+                reuseRedirectedURL: true,
+                customLoader: CustomBlobLoaderWithOffset
+            });
+            
+            mpegtsPlayer.on(mpegts.Events.ERROR, (errorType, errorDetail, errorInfo) => {
+                console.error('MPEG-TS Error:', errorType, errorDetail, errorInfo);
+            });
+            
+            mpegtsPlayer.attachMediaElement(video);
+            mpegtsPlayer.load();
+            
+            // Wait for video to be ready and set time
+            return new Promise((resolve) => {
+                const onCanPlay = () => {
+                    video.removeEventListener('canplay', onCanPlay);
+                    // The video should start near our target time due to byte offset
+                    // But MPEG-TS timing is imprecise, so we may need to adjust
+                    if (shouldPlay) {
+                        video.play().catch(() => {});
+                    }
+                    resolve();
+                };
+                video.addEventListener('canplay', onCanPlay);
+                
+                // Timeout fallback
+                setTimeout(() => {
+                    video.removeEventListener('canplay', onCanPlay);
+                    if (shouldPlay) {
+                        video.play().catch(() => {});
+                    }
+                    resolve();
+                }, 5000);
+            });
         }
 
         // Fullscreen
@@ -2463,7 +2714,13 @@
                     const percent = parseInt(e.key) / 10;
                     const dur = getEffectiveDuration();
                     if (dur > 0) {
-                        video.currentTime = dur * percent;
+                        const targetTime = dur * percent;
+                        // For MPEG-TS files, use smart seeking
+                        if (currentTsFile && mpegtsPlayer) {
+                            seekMpegTs(targetTime);
+                        } else {
+                            video.currentTime = targetTime;
+                        }
                     }
                     break;
             }
@@ -2522,7 +2779,14 @@
         function seekBy(seconds) {
             const duration = getEffectiveDuration();
             if (duration > 0) {
-                video.currentTime = Math.max(0, Math.min(duration, video.currentTime + seconds));
+                const targetTime = Math.max(0, Math.min(duration, video.currentTime + seconds));
+                
+                // For MPEG-TS files, use smart seeking
+                if (currentTsFile && mpegtsPlayer) {
+                    seekMpegTs(targetTime);
+                } else {
+                    video.currentTime = targetTime;
+                }
             }
         }
 
