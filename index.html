@@ -1216,21 +1216,25 @@
             
             // Check if it's an MPEG-TS file and use mpegts.js
             if (isMpegTsFile(file) && typeof mpegts !== 'undefined' && mpegts.isSupported()) {
-                // Use mpegts.js for .ts files
+                // Use mpegts.js for .ts files with seeking support
                 mpegtsPlayer = mpegts.createPlayer({
                     type: 'mpegts',
                     isLive: false,
                     url: currentVideoUrl
+                }, {
+                    // Enable seeking for static files
+                    enableWorker: true,
+                    lazyLoad: true,
+                    lazyLoadMaxDuration: 3 * 60, // 3 minutes buffer
+                    lazyLoadRecoverDuration: 30,
+                    accurateSeek: true,
+                    seekType: 'range', // Use HTTP Range requests for seeking
+                    autoCleanupSourceBuffer: true,
+                    autoCleanupMaxBackwardDuration: 3 * 60,
+                    autoCleanupMinBackwardDuration: 2 * 60
                 });
                 mpegtsPlayer.attachMediaElement(video);
                 mpegtsPlayer.load();
-                
-                // Show limitation notice for MPEG-TS files
-                showToast(
-                    '⚠️ MPEG-TS Limitation',
-                    'Seeking and duration are not supported for .ts files due to format limitations. For full playback control, convert to MP4 using FFmpeg: ffmpeg -i video.ts -c copy video.mp4',
-                    12000
-                );
             } else {
                 // Use native HTML5 video for other formats
                 video.src = currentVideoUrl;
