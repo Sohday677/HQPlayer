@@ -191,7 +191,7 @@
             bottom: 0;
             left: 0;
             right: 0;
-            background: linear-gradient(transparent, rgba(0, 0, 0, 0.9));
+            background: linear-gradient(transparent 0%, rgba(0, 0, 0, 0.1) 50%, rgba(0, 0, 0, 0.4) 100%);
             padding: 8px 12px 12px;
             opacity: 0;
             transition: opacity 0.2s ease;
@@ -535,22 +535,22 @@
             100% { transform: rotate(360deg); }
         }
 
-        /* Title bar */
+        /* Title bar - hidden when paused */
         .video-title-bar {
             position: absolute;
             top: 0;
             left: 0;
             right: 0;
             padding: 16px;
-            background: linear-gradient(rgba(0, 0, 0, 0.8), transparent);
+            background: transparent;
             opacity: 0;
             transition: opacity 0.2s ease;
             z-index: 10;
         }
 
-        .video-container:hover .video-title-bar,
-        .video-container.show-controls .video-title-bar {
+        .video-container:hover .video-title-bar {
             opacity: 1;
+            background: linear-gradient(rgba(0, 0, 0, 0.3), transparent);
         }
 
         .video-title {
@@ -563,15 +563,16 @@
             text-overflow: ellipsis;
         }
 
-        /* Keyboard shortcuts indicator */
+        /* Keyboard shortcuts indicator - circular and centered */
         .keyboard-indicator {
             position: absolute;
             top: 50%;
             left: 50%;
             transform: translate(-50%, -50%);
-            background: rgba(0, 0, 0, 0.7);
-            border-radius: 8px;
-            padding: 16px 24px;
+            width: 80px;
+            height: 80px;
+            background: rgba(0, 0, 0, 0.4);
+            border-radius: 50%;
             display: flex;
             align-items: center;
             justify-content: center;
@@ -592,9 +593,7 @@
         }
 
         .keyboard-indicator-text {
-            font-size: 16px;
-            color: #fff;
-            margin-left: 8px;
+            display: none;
         }
 
         /* Volume indicator at top */
@@ -1025,10 +1024,8 @@
                 <li><kbd>F</kbd> Toggle fullscreen</li>
                 <li><kbd>I</kbd> Toggle Picture-in-Picture</li>
                 <li><kbd>0-9</kbd> Seek to percentage (0 = 0%, 5 = 50%, etc.)</li>
-                <li><kbd>,</kbd> Previous frame (when paused)</li>
-                <li><kbd>.</kbd> Next frame (when paused)</li>
-                <li><kbd>&lt;</kbd> Decrease playback speed</li>
-                <li><kbd>&gt;</kbd> Increase playback speed</li>
+                <li><kbd>,</kbd> Slow rewind (hold for smooth playback)</li>
+                <li><kbd>.</kbd> Slow forward (hold for smooth playback)</li>
             </ul>
         </div>
     </main>
@@ -1086,7 +1083,14 @@
         let ambientAnimationFrame = null;
         let lastVolume = 1;
         let volumeIndicatorTimeout = null;
+        let keyboardIndicatorTimeout = null;
         const speeds = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
+        
+        // Frame-by-frame state
+        let frameStepInterval = null;
+        let originalPlaybackRate = 1;
+        let wasPlayingBeforeFrameStep = false;
+        let currentVideoFileName = null;
 
         // Utility functions
         function formatTime(seconds) {
@@ -1133,20 +1137,55 @@
         let currentVideoUrl = null;
 
         function loadVideo(file) {
+            // Save current video position before loading new one
+            saveVideoPosition();
+            
             // Revoke previous URL to prevent memory leaks
             if (currentVideoUrl) {
                 URL.revokeObjectURL(currentVideoUrl);
             }
             currentVideoUrl = URL.createObjectURL(file);
+            currentVideoFileName = file.name;
             video.src = currentVideoUrl;
             videoTitle.textContent = file.name.replace(/\.[^/.]+$/, '');
             fileOverlay.classList.add('hidden');
             loadingSpinner.classList.add('visible');
             video.load();
         }
+        
+        // Save video position to localStorage
+        function saveVideoPosition() {
+            if (currentVideoFileName && video.currentTime > 0 && video.duration) {
+                const positions = JSON.parse(localStorage.getItem('hqplayer_positions') || '{}');
+                positions[currentVideoFileName] = {
+                    time: video.currentTime,
+                    duration: video.duration,
+                    savedAt: Date.now()
+                };
+                // Keep only last 50 videos to prevent localStorage bloat
+                const keys = Object.keys(positions);
+                if (keys.length > 50) {
+                    const sorted = keys.sort((a, b) => positions[a].savedAt - positions[b].savedAt);
+                    delete positions[sorted[0]];
+                }
+                localStorage.setItem('hqplayer_positions', JSON.stringify(positions));
+            }
+        }
+        
+        // Restore video position from localStorage
+        function restoreVideoPosition() {
+            if (currentVideoFileName) {
+                const positions = JSON.parse(localStorage.getItem('hqplayer_positions') || '{}');
+                const saved = positions[currentVideoFileName];
+                if (saved && saved.time > 0 && saved.time < video.duration - 1) {
+                    video.currentTime = saved.time;
+                }
+            }
+        }
 
         // Clean up on page unload
         window.addEventListener('beforeunload', () => {
+            saveVideoPosition();
             if (currentVideoUrl) {
                 URL.revokeObjectURL(currentVideoUrl);
             }
@@ -1156,6 +1195,8 @@
         video.addEventListener('loadedmetadata', () => {
             durationEl.textContent = formatTime(video.duration);
             loadingSpinner.classList.remove('visible');
+            // Restore saved position after metadata loads
+            restoreVideoPosition();
         });
 
         video.addEventListener('canplay', () => {
@@ -1496,16 +1537,19 @@
                     e.preventDefault();
                     changeVolume(0.05);
                     showVolumeIndicator();
+                    showKeyboardIndicator('volume-up');
                     break;
                 case 'arrowdown':
                     e.preventDefault();
                     changeVolume(-0.05);
                     showVolumeIndicator();
+                    showKeyboardIndicator('volume-down');
                     break;
                 case 'm':
                     e.preventDefault();
                     video.muted = !video.muted;
                     showVolumeIndicator();
+                    showKeyboardIndicator(video.muted ? 'mute' : 'unmute');
                     break;
                 case 'f':
                     e.preventDefault();
@@ -1517,25 +1561,15 @@
                     break;
                 case ',':
                     e.preventDefault();
-                    // Frame by frame backward (like YouTube)
-                    if (video.paused && video.duration) {
-                        video.currentTime = Math.max(0, video.currentTime - (1/30)); // Assume 30fps
+                    if (!e.repeat) {
+                        startSlowPlayback('backward');
                     }
                     break;
                 case '.':
                     e.preventDefault();
-                    // Frame by frame forward (like YouTube)
-                    if (video.paused && video.duration) {
-                        video.currentTime = Math.min(video.duration, video.currentTime + (1/30)); // Assume 30fps
+                    if (!e.repeat) {
+                        startSlowPlayback('forward');
                     }
-                    break;
-                case '<':
-                    e.preventDefault();
-                    changeSpeed(-1);
-                    break;
-                case '>':
-                    e.preventDefault();
-                    changeSpeed(1);
                     break;
                 case '0':
                 case '1':
@@ -1555,6 +1589,48 @@
                     break;
             }
         });
+        
+        // Handle keyup for smooth frame-by-frame
+        document.addEventListener('keyup', (e) => {
+            // Don't trigger shortcuts when typing in inputs
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+            
+            if (e.key === ',' || e.key === '.') {
+                stopSlowPlayback();
+            }
+        });
+        
+        // Smooth slow playback functions
+        function startSlowPlayback(direction) {
+            if (!video.src || !video.duration) return;
+            
+            // Save original state
+            wasPlayingBeforeFrameStep = !video.paused;
+            originalPlaybackRate = video.playbackRate;
+            
+            // Use manual frame stepping for both directions (more reliable cross-browser)
+            video.pause();
+            const stepAmount = direction === 'forward' ? (1/30) : -(1/30);
+            frameStepInterval = setInterval(() => {
+                const newTime = video.currentTime + stepAmount;
+                video.currentTime = Math.max(0, Math.min(video.duration, newTime));
+            }, 33); // ~30fps
+        }
+        
+        function stopSlowPlayback() {
+            if (frameStepInterval) {
+                clearInterval(frameStepInterval);
+                frameStepInterval = null;
+            }
+            
+            // Restore original playback rate
+            video.playbackRate = originalPlaybackRate;
+            
+            // Restore original play state
+            if (wasPlayingBeforeFrameStep) {
+                video.play();
+            }
+        }
 
         function seekBy(seconds) {
             if (video.duration) {
@@ -1590,7 +1666,11 @@
 
             keyboardIndicatorIcon.innerHTML = icons[type] || '';
             keyboardIndicator.classList.add('visible');
-            setTimeout(() => {
+            
+            // Clear previous timeout
+            clearTimeout(keyboardIndicatorTimeout);
+            
+            keyboardIndicatorTimeout = setTimeout(() => {
                 keyboardIndicator.classList.remove('visible');
             }, 500);
         }
